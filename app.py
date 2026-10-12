@@ -29,11 +29,10 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
-# Fonction de détection ciblée sur le NUMÉRO D'ÉQUIPEMENT (en évitant "famille")
+# Détection automatique de la colonne d'identifiant d'équipement
 def find_equip_number_column(df):
     if df is None:
         return None
-    # Liste de priorités strictes pour éviter de tomber sur "famille" ou un autre ID
     priorities = [
         "n° equipement", "n° équipement", "numero equipement", "numéro équipement",
         "n° inventaire", "numero inventaire", "numéro d'inventaire", "n°inventaire",
@@ -45,13 +44,36 @@ def find_equip_number_column(df):
             clean_col = str(col).strip().lower()
             if prio in clean_col and "famille" not in clean_col:
                 return col
-    # Si non trouvé, retourne la 1ère colonne qui n'a pas "famille" dedans
     for col in df.columns:
         if "famille" not in str(col).strip().lower():
             return col
     return df.columns[0] if len(df.columns) > 0 else None
 
-# --- MENU LATÉRAL : ACCÈS ET PROFILS ---
+# Fonction d'affichage réutilisable pour la fiche détaillée
+def display_equip_details(row_data, equip_val, df_interv, interv_id_col):
+    st.markdown(f"### 📋 Détails de l'équipement : **{equip_val}**")
+    sub_info, sub_hist = st.tabs(["📄 Fiche Signalétique", "🛠️ Historique des Interventions"])
+    
+    with sub_info:
+        cols = st.columns(3)
+        idx = 0
+        for col_name, val in row_data.items():
+            if pd.notna(val):
+                cols[idx % 3].write(f"**{col_name} :** {val}")
+                idx += 1
+                
+    with sub_hist:
+        if df_interv is not None and interv_id_col is not None:
+            match = df_interv[df_interv[interv_id_col].astype(str) == str(equip_val)]
+            if not match.empty:
+                st.success(f"{len(match)} intervention(s) répertoriée(s) pour cet équipement.")
+                st.dataframe(match, use_container_width=True)
+            else:
+                st.info("Aucune intervention enregistrée pour cet équipement.")
+        else:
+            st.warning("Le registre des interventions n'est pas encore importé.")
+
+# --- MENU LATÉRAL ---
 st.sidebar.title("🔐 Espace Accès")
 role = st.sidebar.radio("Profil d'accès :", ["Utilisateur (Consultation)", "Administrateur (Gestion)"])
 
@@ -67,21 +89,21 @@ if role == "Administrateur (Gestion)":
 if is_admin:
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 Mettre à jour les fichiers")
-    new_equip = st.sidebar.file_uploader("Remplacer le fichier Équipements (.xlsx)", type=["xlsx", "xls"], key="admin_up_eq")
+    new_equip = st.sidebar.file_uploader("Remplacer Équipements (.xlsx)", type=["xlsx", "xls"], key="admin_up_eq")
     if new_equip:
         df_temp = pd.read_excel(new_equip)
         df_temp.columns = [str(c).strip() for c in df_temp.columns]
         st.session_state.df_equip = df_temp
         st.sidebar.success("Équipements actualisés !")
 
-    new_interv = st.sidebar.file_uploader("Charger le fichier Interventions (.xlsx)", type=["xlsx", "xls"], key="admin_up_in")
+    new_interv = st.sidebar.file_uploader("Charger Interventions (.xlsx)", type=["xlsx", "xls"], key="admin_up_in")
     if new_interv:
         df_itemp = pd.read_excel(new_interv)
         df_itemp.columns = [str(c).strip() for c in df_itemp.columns]
         st.session_state.df_interv = df_itemp
         st.sidebar.success("Interventions actualisées !")
 
-# --- TITRE ET CONTENU ---
+# --- APPLICATION PRINCIPALE ---
 st.title("🏥 GMAO Biomédicale")
 
 df_equip = st.session_state.df_equip
@@ -89,9 +111,8 @@ df_interv = st.session_state.df_interv
 
 if df_equip is None:
     st.error(f"⚠️ Le fichier `{EQUIP_FILE_DEFAULT}` n'a pas été trouvé sur GitHub.")
-    st.info("Vérifie bien que le fichier est déposé à la racine de ton projet GitHub.")
+    st.info("Déposez le fichier sur GitHub ou importez-le en mode administrateur.")
 else:
-    # Détection par défaut
     auto_equip_col = find_equip_number_column(df_equip)
     interv_id_col = find_equip_number_column(df_interv) if df_interv is not None else None
 
@@ -99,66 +120,61 @@ else:
     col_m1, col_m2, col_m3 = st.columns(3)
     col_m1.metric("Équipements au parc", len(df_equip))
     col_m2.metric("Interventions archivées", len(df_interv) if df_interv is not None else "En attente")
-    col_m3.metric("Colonne détectée", auto_equip_col)
+    col_m3.metric("Clé d'identification", auto_equip_col)
 
     st.markdown("---")
 
-    list_tabs = ["🔍 Consulter un Équipement", "📋 Parc Global"]
+    list_tabs = ["📋 Parc Global (Sélection cliquable)", "🔍 Recherche Rapide"]
     if is_admin:
         list_tabs.append("➕ Ajouter un Équipement")
 
     tabs = st.tabs(list_tabs)
 
-    # 1. FICHE ÉQUIPEMENT & HISTORIQUE
+    # 1. PARC GLOBAL AVEC CLIC INTERACTIF
     with tabs[0]:
-        st.subheader("Consultation d'un équipement")
+        st.subheader("Inventaire général du parc biomédical")
+        st.caption("💡 Cliquez sur une ligne du tableau pour afficher automatiquement la fiche et les interventions.")
+        
+        query = st.text_input("Filtrer le tableau (mot-clé, marque, service...) :", key="filter_global")
+        display_df = df_equip
+        if query:
+            display_df = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(query, case=False).any(), axis=1)]
+            st.write(f"{len(display_df)} résultat(s)")
 
-        # Choix de la colonne de référence (au cas où tu veux changer à la volée)
+        # Tableau interactif avec sélection de ligne
+        selection = st.dataframe(
+            display_df,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+
+        # Si l'utilisateur clique sur une ligne
+        selected_rows = selection.selection.rows if hasattr(selection, "selection") else []
+        if len(selected_rows) > 0:
+            selected_index = selected_rows[0]
+            selected_row_data = display_df.iloc[selected_index]
+            equip_val = selected_row_data[auto_equip_col]
+            st.markdown("---")
+            display_equip_details(selected_row_data, equip_val, df_interv, interv_id_col)
+
+    # 2. RECHERCHE RAPIDE PAR MENU
+    with tabs[1]:
+        st.subheader("Recherche ciblée par numéro d'équipement")
         col_select, col_search = st.columns([1, 2])
         with col_select:
             col_list = list(df_equip.columns)
             default_index = col_list.index(auto_equip_col) if auto_equip_col in col_list else 0
-            equip_id_col = st.selectbox("Champ de recherche :", col_list, index=default_index)
+            equip_id_col = st.selectbox("Champ de recherche :", col_list, index=default_index, key="search_col")
 
         with col_search:
             equip_numbers = df_equip[equip_id_col].dropna().astype(str).unique().tolist()
-            selected_num = st.selectbox(f"Sélectionner / Saisir le {equip_id_col} :", equip_numbers)
+            selected_num = st.selectbox(f"Sélectionner / Saisir le {equip_id_col} :", equip_numbers, key="search_val")
 
         if selected_num:
-            row = df_equip[df_equip[equip_id_col].astype(str) == selected_num].iloc[0]
-
-            sub_tab_info, sub_tab_history = st.tabs(["📄 Fiche Signalétique", "🛠️ Historique des Interventions"])
-
-            with sub_tab_info:
-                st.markdown(f"#### Équipement : **{selected_num}**")
-                cols = st.columns(3)
-                idx = 0
-                for col_name, val in row.items():
-                    if pd.notna(val):
-                        cols[idx % 3].write(f"**{col_name} :** {val}")
-                        idx += 1
-
-            with sub_tab_history:
-                if df_interv is not None and interv_id_col is not None:
-                    interv_match = df_interv[df_interv[interv_id_col].astype(str) == selected_num]
-                    if not interv_match.empty:
-                        st.success(f"{len(interv_match)} intervention(s) répertoriée(s) pour cet appareil.")
-                        st.dataframe(interv_match, use_container_width=True)
-                    else:
-                        st.info("Aucune intervention enregistrée pour cet équipement.")
-                else:
-                    st.warning("Le registre des interventions n'est pas encore importé.")
-
-    # 2. VUE DU PARC COMPLET
-    with tabs[1]:
-        st.subheader("Inventaire général du parc")
-        query = st.text_input("Filtrer le tableau (mot-clé, désignation, service, marque...) :")
-        if query:
-            filtered = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(query, case=False).any(), axis=1)]
-            st.write(f"{len(filtered)} résultat(s)")
-            st.dataframe(filtered, use_container_width=True)
-        else:
-            st.dataframe(df_equip, use_container_width=True)
+            row_match = df_equip[df_equip[equip_id_col].astype(str) == selected_num].iloc[0]
+            st.markdown("---")
+            display_equip_details(row_match, selected_num, df_interv, interv_id_col)
 
     # 3. AJOUT D'ÉQUIPEMENT (ADMIN)
     if is_admin:
