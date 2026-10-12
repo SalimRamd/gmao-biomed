@@ -123,4 +123,201 @@ def display_equip_view(row_data, equip_val, is_admin, auto_equip_col, interv_id_
                 int_num = f_c1.text_input("N° Intervention")
                 int_bc = f_c2.text_input("N° Devis / Commande / BC")
                 
-                obs
+                obs_appel = st.text_area("Observations lors de l'appel (panne déclarée)")
+                obs_tech = st.text_area("Observations technique (travaux réalisés)")
+                
+                submit_int = st.form_submit_button("Enregistrer l'intervention")
+                if submit_int:
+                    new_entry = {
+                        interv_id_col: str(equip_val),
+                        "N° Interv.": int_num,
+                        "Début": str(int_date),
+                        "Cadre": int_cadre,
+                        "Techn.": int_tech,
+                        "Fournisseur": int_fourn,
+                        "N° BC": int_bc,
+                        "Observations lors de l'appel": obs_appel,
+                        "Observations technique": obs_tech
+                    }
+                    st.session_state.df_interv = pd.concat([st.session_state.df_interv, pd.DataFrame([new_entry])], ignore_index=True)
+                    st.success("Intervention enregistrée avec succès !")
+                    st.rerun()
+
+# --- MENU LATÉRAL ---
+st.sidebar.title("🔐 Espace Accès")
+role = st.sidebar.radio("Profil d'accès :", ["Utilisateur (Consultation)", "Administrateur (Gestion)"])
+
+is_admin = False
+if role == "Administrateur (Gestion)":
+    admin_password = st.sidebar.text_input("Mot de passe administrateur :", type="password")
+    if admin_password == "biomed2026":
+        is_admin = True
+        st.sidebar.success("Mode Administrateur activé ✅")
+    elif admin_password:
+        st.sidebar.error("Mot de passe incorrect")
+
+if is_admin:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📥 Remplacer les bases")
+    new_eq_file = st.sidebar.file_uploader("Fichier Équipements (.xlsx)", type=["xlsx", "xls"], key="adm_eq")
+    if new_eq_file:
+        df_eq_up = pd.read_excel(new_eq_file)
+        df_eq_up.columns = [str(c).strip() for c in df_eq_up.columns]
+        st.session_state.df_equip = df_eq_up
+        st.sidebar.success("Équipements actualisés !")
+
+    new_in_file = st.sidebar.file_uploader("Fichier Interventions (.xlsx / .xls)", type=["xlsx", "xls"], key="adm_in")
+    if new_in_file:
+        df_in_up = pd.read_excel(new_in_file)
+        df_in_up.columns = [str(c).strip() for c in df_in_up.columns]
+        st.session_state.df_interv = df_in_up
+        st.sidebar.success("Interventions actualisées !")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("💾 Exporter")
+    if st.session_state.df_interv is not None and not st.session_state.df_interv.empty:
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state.df_interv.to_excel(writer, index=False, sheet_name='Interventions')
+        st.sidebar.download_button(
+            label="📥 Télécharger interventions.xlsx",
+            data=buffer.getvalue(),
+            file_name="interventions.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# --- CORPS PRINCIPAL ---
+st.title("🏥 GMAO Biomédicale")
+
+df_equip = st.session_state.df_equip
+df_interv = st.session_state.df_interv
+
+if df_equip is None:
+    st.error(f"⚠️ Le fichier `{EQUIP_FILE_DEFAULT}` n'a pas été trouvé sur GitHub.")
+else:
+    auto_equip_col = find_equip_number_column(df_equip)
+    interv_id_col = find_equip_number_column(df_interv) if df_interv is not None and not df_interv.empty else "N° Equipement"
+
+    # Indicateurs généraux
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Équipements au parc", len(df_equip))
+    m2.metric("Total Interventions", len(df_interv) if df_interv is not None else 0)
+    m3.metric("Clé de liaison", f"{auto_equip_col} ↔ {interv_id_col}")
+
+    st.markdown("---")
+
+    # LES 3 GRANDES SECTIONS PRINCIPALES
+    main_tabs = st.tabs([
+        "📋 Parc des Équipements", 
+        "🛠️ Registre des Interventions", 
+        "🔍 Recherche Rapide Équipement"
+    ])
+
+    # ==========================================
+    # SECTION 1 : PARC DES ÉQUIPEMENTS
+    # ==========================================
+    with main_tabs[0]:
+        st.subheader("Inventaire général du parc biomédical")
+        st.caption("💡 Cliquez sur une ligne pour afficher la fiche de l'équipement et son historique.")
+        
+        query_eq = st.text_input("Filtrer les équipements (nom, marque, modèle, service...) :", key="eq_search")
+        display_eq = df_equip
+        if query_eq:
+            display_eq = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(query_eq, case=False).any(), axis=1)]
+            st.write(f"{len(display_eq)} équipement(s) trouvé(s)")
+
+        selection_eq = st.dataframe(
+            display_eq,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+
+        selected_rows_eq = selection_eq.selection.rows if hasattr(selection_eq, "selection") else []
+        if len(selected_rows_eq) > 0:
+            row_data = display_eq.iloc[selected_rows_eq[0]]
+            equip_val = row_data[auto_equip_col]
+            st.markdown("---")
+            display_equip_view(row_data, equip_val, is_admin, auto_equip_col, interv_id_col)
+
+    # ==========================================
+    # SECTION 2 : REGISTRE GLOBAL DES INTERVENTIONS
+    # ==========================================
+    with main_tabs[1]:
+        st.subheader("Historique global de toutes les interventions")
+        
+        if df_interv is not None and not df_interv.empty:
+            df_interv_clean = format_interventions_table(df_interv)
+            
+            # Filtres intelligents
+            col_f1, col_f2, col_f3 = st.columns(3)
+            
+            # Filtre par technicien
+            tech_list = ["Tous"]
+            if "Techn." in df_interv_clean.columns:
+                tech_list += [str(t) for t in df_interv_clean["Techn."].dropna().unique() if str(t).strip() != ""]
+            selected_tech = col_f1.selectbox("Filtrer par technicien :", tech_list)
+            
+            # Filtre par type/cadre
+            cadre_list = ["Tous"]
+            if "Cadre" in df_interv_clean.columns:
+                cadre_list += [str(c) for c in df_interv_clean["Cadre"].dropna().unique() if str(c).strip() != ""]
+            selected_cadre = col_f2.selectbox("Filtrer par type / cadre :", cadre_list)
+
+            # Recherche plein texte
+            search_interv = col_f3.text_input("Recherche mot-clé (panne, n° BC, obs...) :")
+
+            # Application des filtres
+            filtered_interv = df_interv_clean
+            if selected_tech != "Tous":
+                filtered_interv = filtered_interv[filtered_interv["Techn."].astype(str) == selected_tech]
+            if selected_cadre != "Tous":
+                filtered_interv = filtered_interv[filtered_interv["Cadre"].astype(str) == selected_cadre]
+            if search_interv:
+                filtered_interv = filtered_interv[filtered_interv.apply(lambda r: r.astype(str).str.contains(search_interv, case=False).any(), axis=1)]
+
+            st.write(f"Affichage de **{len(filtered_interv)}** intervention(s)")
+
+            # Tableau cliquable des interventions
+            selection_int = st.dataframe(
+                filtered_interv,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="single-row"
+            )
+
+            # Affichage du rapport complet si on clique sur une ligne d'intervention
+            selected_rows_int = selection_int.selection.rows if hasattr(selection_int, "selection") else []
+            if len(selected_rows_int) > 0:
+                int_row = filtered_interv.iloc[selected_rows_int[0]]
+                st.markdown("---")
+                st.markdown(f"### 🛠️ Détail de l'intervention : **{int_row.get('N° Interv.', 'Sans N°')}**")
+                
+                c_det1, c_det2 = st.columns(2)
+                c_det1.write(f"**N° Équipement :** {int_row.get(interv_id_col, 'N/A')}")
+                c_det1.write(f"**Date début :** {int_row.get('Début', 'N/A')}")
+                c_det1.write(f"**Technicien :** {int_row.get('Techn.', 'N/A')}")
+                c_det1.write(f"**Cadre :** {int_row.get('Cadre', 'N/A')}")
+
+                c_det2.write(f"**Fournisseur :** {int_row.get('Fournisseur', 'N/A')}")
+                c_det2.write(f"**N° Commande / BC :** {int_row.get('N° BC', 'N/A')}")
+                c_det2.write(f"**Date fin :** {int_row.get('Fin', 'N/A')}")
+
+                st.info(f"**Observations lors de l'appel (Panne) :**\n\n{int_row.get('Observations lors de l\'appel', 'Aucune note')}")
+                st.success(f"**Observations technique (Réparation) :**\n\n{int_row.get('Observations technique', 'Aucune note')}")
+
+        else:
+            st.info("Aucun registre d'interventions n'est présent sur GitHub. Déposez `TEST.XLS` ou `interventions.xlsx`.")
+
+    # ==========================================
+    # SECTION 3 : RECHERCHE RAPIDE DIRECTE
+    # ==========================================
+    with main_tabs[2]:
+        st.subheader("Recherche directe par numéro d'équipement")
+        equip_numbers = df_equip[auto_equip_col].dropna().astype(str).unique().tolist()
+        chosen_id = st.selectbox("Sélectionnez ou tapez le numéro :", equip_numbers, key="quick_search_box")
+        if chosen_id:
+            row_data = df_equip[df_equip[auto_equip_col].astype(str) == chosen_id].iloc[0]
+            st.markdown("---")
+            display_equip_view(row_data, chosen_id, is_admin, auto_equip_col, interv_id_col)
