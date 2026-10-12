@@ -1,0 +1,5 @@
+code,cause,solution,source,page
+E-02,Surchauffe cuve / Défaut tachymétrique,"Contrôler l'entrefer du capteur de vitesse sous le bol (0,8 mm ± 0,2). Vérifier l'aimant d'arbre moteur et les enroulements du compresseur.",Manuel Hettich,48
+LID OPEN,Contacteur couvercle défaillant,Vérifier la course du micro-contacteur de sécurité (SW1). Remplacer l'électro-aimant de verrouillage si résistance infinie.,Manuel Hettich,52
+AL-04,Débit d'eau osmosée insuffisant,"Nettoyer le tamis d'admission 50µm. Vérifier la pression statique amont (min 2,5 bars) et le signal du débitmètre à turbine.",Manuel WD40,31
+AIR IN LINE,Bulle détectée ou capteur encrassé,Nettoyer les prismes optiques de détection ultrasonique avec de l'alcool isopropylique. Étalonner la sensibilité du capteur.,Manuel Fluido,19
