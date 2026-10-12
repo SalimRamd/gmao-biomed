@@ -1,323 +1,197 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime, date
 
-# Configuration de la page
 st.set_page_config(page_title="GMAO Biomédicale", layout="wide", page_icon="🏥")
 
-EQUIP_FILE_DEFAULT = "Equipement 2026.xlsx"
-INTERV_CANDIDATES = ["interventions.xlsx", "TEST.XLS", "test.xls", "TEST.xlsx"]
+# --- NOMS DES FICHIERS PRÉSENTS SUR GITHUB ---
+FICHIER_EQUIPEMENT = "Equipement 2026.xlsx"
+FICHIER_INTERVENTION = "interventions.xlsx"
+FICHIER_INTERVENTION_SECOURS = "interventions.xls"
 
-# 1. Chargement des données
+# --- 1. CHARGEMENT AUTOMATIQUE DES DEUX FICHIERS ---
 @st.cache_data
-def load_data():
+def charger_les_donnees():
     df_eq = None
     df_in = None
-    
-    # Équipements
-    if os.path.exists(EQUIP_FILE_DEFAULT):
+
+    # Chargement du fichier des équipements
+    if os.path.exists(FICHIER_EQUIPEMENT):
         try:
-            df_eq = pd.read_excel(EQUIP_FILE_DEFAULT)
+            df_eq = pd.read_excel(FICHIER_EQUIPEMENT)
             df_eq.columns = [str(c).strip() for c in df_eq.columns]
         except Exception as e:
-            st.error(f"Erreur de lecture de {EQUIP_FILE_DEFAULT} : {e}")
-            
-    # Interventions
-    for fname in INTERV_CANDIDATES:
-        if os.path.exists(fname):
-            try:
-                df_in = pd.read_excel(fname)
-                df_in.columns = [str(c).strip() for c in df_in.columns]
-                break
-            except Exception as e:
-                st.error(f"Erreur de lecture de {fname} : {e}")
-                
+            st.error(f"Erreur de lecture de {FICHIER_EQUIPEMENT} : {e}")
+
+    # Chargement du fichier des interventions
+    source_interv = None
+    if os.path.exists(FICHIER_INTERVENTION):
+        source_interv = FICHIER_INTERVENTION
+    elif os.path.exists(FICHIER_INTERVENTION_SECOURS):
+        source_interv = FICHIER_INTERVENTION_SECOURS
+
+    if source_interv:
+        try:
+            df_in = pd.read_excel(source_interv)
+            df_in.columns = [str(c).strip() for c in df_in.columns]
+        except Exception as e:
+            st.error(f"Erreur de lecture de {source_interv} : {e}")
+
     return df_eq, df_in
 
-default_equip, default_interv = load_data()
+# Mise en mémoire
+df_equip, df_interv = charger_les_donnees()
 
-if "df_equip" not in st.session_state or st.session_state.df_equip is None:
-    st.session_state.df_equip = default_equip
-if "df_interv" not in st.session_state or st.session_state.df_interv is None:
-    st.session_state.df_interv = default_interv
-
-# Détection de la colonne identifiant N° Équipement
-def find_equip_number_column(df):
+# Détection de la colonne N° Equipement
+def trouver_colonne_id(df):
     if df is None:
         return None
-    priorities = [
-        "n° equipement", "n° équipement", "numero equipement", "numéro équipement",
-        "n° inventaire", "numero inventaire", "numéro d'inventaire", "n°inventaire",
-        "code équipement", "code equipement", "equipement", "équipement",
-        "n° serie", "n° série"
-    ]
-    for prio in priorities:
+    candidats = ["n° equipement", "n° équipement", "numero equipement", "numéro équipement", "n° inventaire", "code équipement"]
+    for c in candidats:
         for col in df.columns:
-            clean_col = str(col).strip().lower()
-            if prio in clean_col and "famille" not in clean_col:
+            if c in str(col).lower() and "famille" not in str(col).lower():
                 return col
-    for col in df.columns:
-        if "famille" not in str(col).strip().lower():
-            return col
     return df.columns[0] if len(df.columns) > 0 else None
 
-# Mise en ordre des colonnes d'intervention pour un affichage propre
-def format_interventions_table(df):
+col_id_equip = trouver_colonne_id(df_equip)
+col_id_interv = trouver_colonne_id(df_interv) if df_interv is not None else "N° Equipement"
+
+# Nettoyage des colonnes d'interventions pour un affichage lisible
+def colonnes_utiles_interventions(df):
     if df is None or df.empty:
         return df
-    target_cols = [
-        "N° Interv.", "N° Equipement", "Début", "Fin", "Cadre", "Techn.", "Fournisseur", 
-        "Observations lors de l'appel", "Observations technique", "N° BC"
+    colonnes_prioritaires = [
+        "N° Interv.", "N° Equipement", "Début", "Fin", "Cadre", 
+        "Techn.", "Fournisseur", "Observations lors de l'appel", 
+        "Observations technique", "N° BC"
     ]
-    existing = [c for c in target_cols if c in df.columns]
-    if existing:
-        others = [c for c in df.columns if c not in existing and c != "R.I. Simple"]
-        return df[existing + others]
-    return df
+    presentes = [c for c in colonnes_prioritaires if c in df.columns]
+    autres = [c for c in df.columns if c not in presentes and c != "R.I. Simple"]
+    return df[presentes + autres] if presentes else df
 
-# Affichage détaillé d'un équipement
-def display_equip_view(row_data, equip_val, is_admin, auto_equip_col, interv_id_col):
-    st.markdown(f"### 📋 Fiche Équipement : **{equip_val}**")
-    tabs_eq = ["📄 Fiche Signalétique", "🛠️ Historique des Interventions"]
-    if is_admin:
-        tabs_eq.append("➕ Ajouter une Intervention")
-    
-    eq_subtabs = st.tabs(tabs_eq)
-
-    # Signalétique
-    with eq_subtabs[0]:
-        cols = st.columns(3)
-        idx = 0
-        for col_name, val in row_data.items():
-            if pd.notna(val) and str(val).strip() != "":
-                cols[idx % 3].write(f"**{col_name} :** {val}")
-                idx += 1
-
-    # Historique lié
-    with eq_subtabs[1]:
-        current_interv = st.session_state.df_interv
-        if current_interv is not None and not current_interv.empty and interv_id_col in current_interv.columns:
-            match = current_interv[current_interv[interv_id_col].astype(str).str.strip() == str(equip_val).strip()]
-            if not match.empty:
-                st.success(f"{len(match)} intervention(s) archivée(s) pour cet appareil.")
-                cleaned_match = format_interventions_table(match)
-                st.dataframe(cleaned_match, use_container_width=True)
-            else:
-                st.info("Aucune intervention enregistrée pour cet équipement.")
-        else:
-            st.warning("Le registre des interventions n'est pas encore chargé.")
-
-    # Ajout manuel (Admin)
-    if is_admin:
-        with eq_subtabs[2]:
-            st.subheader("Enregistrer une intervention sur cet appareil")
-            with st.form(f"form_interv_{equip_val}", clear_on_submit=True):
-                f_c1, f_c2 = st.columns(2)
-                int_date = f_c1.date_input("Date début", value=date.today())
-                int_cadre = f_c2.selectbox("Cadre / Type", ["Corrective", "Préventive", "Contrôle Qualité / RSAC", "Mise en service"])
-                
-                int_tech = f_c1.text_input("Technicien")
-                int_fourn = f_c2.text_input("Prestataire / Fournisseur")
-                
-                int_num = f_c1.text_input("N° Intervention")
-                int_bc = f_c2.text_input("N° Devis / Commande / BC")
-                
-                obs_appel = st.text_area("Observations lors de l'appel (panne déclarée)")
-                obs_tech = st.text_area("Observations technique (travaux réalisés)")
-                
-                submit_int = st.form_submit_button("Enregistrer l'intervention")
-                if submit_int:
-                    new_entry = {
-                        interv_id_col: str(equip_val),
-                        "N° Interv.": int_num,
-                        "Début": str(int_date),
-                        "Cadre": int_cadre,
-                        "Techn.": int_tech,
-                        "Fournisseur": int_fourn,
-                        "N° BC": int_bc,
-                        "Observations lors de l'appel": obs_appel,
-                        "Observations technique": obs_tech
-                    }
-                    st.session_state.df_interv = pd.concat([st.session_state.df_interv, pd.DataFrame([new_entry])], ignore_index=True)
-                    st.success("Intervention enregistrée avec succès !")
-                    st.rerun()
-
-# --- MENU LATÉRAL ---
-st.sidebar.title("🔐 Espace Accès")
-role = st.sidebar.radio("Profil d'accès :", ["Utilisateur (Consultation)", "Administrateur (Gestion)"])
-
-is_admin = False
-if role == "Administrateur (Gestion)":
-    admin_password = st.sidebar.text_input("Mot de passe administrateur :", type="password")
-    if admin_password == "biomed2026":
-        is_admin = True
-        st.sidebar.success("Mode Administrateur activé ✅")
-    elif admin_password:
-        st.sidebar.error("Mot de passe incorrect")
-
-if is_admin:
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📥 Remplacer les bases")
-    new_eq_file = st.sidebar.file_uploader("Fichier Équipements (.xlsx)", type=["xlsx", "xls"], key="adm_eq")
-    if new_eq_file:
-        df_eq_up = pd.read_excel(new_eq_file)
-        df_eq_up.columns = [str(c).strip() for c in df_eq_up.columns]
-        st.session_state.df_equip = df_eq_up
-        st.sidebar.success("Équipements actualisés !")
-
-    new_in_file = st.sidebar.file_uploader("Fichier Interventions (.xlsx / .xls)", type=["xlsx", "xls"], key="adm_in")
-    if new_in_file:
-        df_in_up = pd.read_excel(new_in_file)
-        df_in_up.columns = [str(c).strip() for c in df_in_up.columns]
-        st.session_state.df_interv = df_in_up
-        st.sidebar.success("Interventions actualisées !")
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("💾 Exporter")
-    if st.session_state.df_interv is not None and not st.session_state.df_interv.empty:
-        import io
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            st.session_state.df_interv.to_excel(writer, index=False, sheet_name='Interventions')
-        st.sidebar.download_button(
-            label="📥 Télécharger interventions.xlsx",
-            data=buffer.getvalue(),
-            file_name="interventions.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-# --- CORPS PRINCIPAL ---
+# --- TITRE PRINCIPAL ---
 st.title("🏥 GMAO Biomédicale")
 
-df_equip = st.session_state.df_equip
-df_interv = st.session_state.df_interv
+# Compteurs
+c1, c2, c3 = st.columns(3)
+c1.metric("Équipements chargés", len(df_equip) if df_equip is not None else 0)
+c2.metric("Interventions chargées", len(df_interv) if df_interv is not None else 0)
+c3.metric("Liaison", f"{col_id_equip} ↔ {col_id_interv}")
 
-if df_equip is None:
-    st.error(f"⚠️ Le fichier `{EQUIP_FILE_DEFAULT}` n'a pas été trouvé sur GitHub.")
-else:
-    auto_equip_col = find_equip_number_column(df_equip)
-    interv_id_col = find_equip_number_column(df_interv) if df_interv is not None and not df_interv.empty else "N° Equipement"
+st.markdown("---")
 
-    # Indicateurs généraux
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Équipements au parc", len(df_equip))
-    m2.metric("Total Interventions", len(df_interv) if df_interv is not None else 0)
-    m3.metric("Clé de liaison", f"{auto_equip_col} ↔ {interv_id_col}")
+# --- LES DEUX SECTIONS ---
+onglet_equipements, onglet_interventions = st.tabs([
+    "📋 Parc des Équipements", 
+    "🛠️ Registre des Interventions"
+])
 
-    st.markdown("---")
+# =========================================================
+# SECTION 1 : TOUS LES ÉQUIPEMENTS
+# =========================================================
+with onglet_equipements:
+    if df_equip is None:
+        st.error(f"Fichier `{FICHIER_EQUIPEMENT}` non trouvé sur GitHub.")
+    else:
+        st.subheader("Inventaire général du parc")
+        st.caption("💡 Cliquez sur une ligne pour voir sa fiche et ses interventions passées.")
 
-    # LES 3 GRANDES SECTIONS PRINCIPALES
-    main_tabs = st.tabs([
-        "📋 Parc des Équipements", 
-        "🛠️ Registre des Interventions", 
-        "🔍 Recherche Rapide Équipement"
-    ])
+        recherche_eq = st.text_input("Rechercher un équipement :", key="rech_eq")
+        vue_eq = df_equip
+        if recherche_eq:
+            vue_eq = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(recherche_eq, case=False).any(), axis=1)]
 
-    # ==========================================
-    # SECTION 1 : PARC DES ÉQUIPEMENTS
-    # ==========================================
-    with main_tabs[0]:
-        st.subheader("Inventaire général du parc biomédical")
-        st.caption("💡 Cliquez sur une ligne pour afficher la fiche de l'équipement et son historique.")
-        
-        query_eq = st.text_input("Filtrer les équipements (nom, marque, modèle, service...) :", key="eq_search")
-        display_eq = df_equip
-        if query_eq:
-            display_eq = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(query_eq, case=False).any(), axis=1)]
-            st.write(f"{len(display_eq)} équipement(s) trouvé(s)")
-
-        selection_eq = st.dataframe(
-            display_eq,
+        table_eq = st.dataframe(
+            vue_eq,
             use_container_width=True,
             on_select="rerun",
             selection_mode="single-row"
         )
 
-        selected_rows_eq = selection_eq.selection.rows if hasattr(selection_eq, "selection") else []
-        if len(selected_rows_eq) > 0:
-            row_data = display_eq.iloc[selected_rows_eq[0]]
-            equip_val = row_data[auto_equip_col]
+        lignes_selectionnees = table_eq.selection.rows if hasattr(table_eq, "selection") else []
+        if len(lignes_selectionnees) > 0:
+            ligne_eq = vue_eq.iloc[lignes_selectionnees[0]]
+            valeur_num = ligne_eq[col_id_equip]
+
             st.markdown("---")
-            display_equip_view(row_data, equip_val, is_admin, auto_equip_col, interv_id_col)
-
-    # ==========================================
-    # SECTION 2 : REGISTRE GLOBAL DES INTERVENTIONS
-    # ==========================================
-    with main_tabs[1]:
-        st.subheader("Historique global de toutes les interventions")
-        
-        if df_interv is not None and not df_interv.empty:
-            df_interv_clean = format_interventions_table(df_interv)
+            st.markdown(f"### 📋 Détail de l'équipement : **{valeur_num}**")
             
-            # Filtres intelligents
-            col_f1, col_f2, col_f3 = st.columns(3)
+            sous_tab_info, sous_tab_pannes = st.tabs(["📄 Informations", "🛠️ Pannes de cet appareil"])
             
-            # Filtre par technicien
-            tech_list = ["Tous"]
-            if "Techn." in df_interv_clean.columns:
-                tech_list += [str(t) for t in df_interv_clean["Techn."].dropna().unique() if str(t).strip() != ""]
-            selected_tech = col_f1.selectbox("Filtrer par technicien :", tech_list)
-            
-            # Filtre par type/cadre
-            cadre_list = ["Tous"]
-            if "Cadre" in df_interv_clean.columns:
-                cadre_list += [str(c) for c in df_interv_clean["Cadre"].dropna().unique() if str(c).strip() != ""]
-            selected_cadre = col_f2.selectbox("Filtrer par type / cadre :", cadre_list)
+            with sous_tab_info:
+                cols = st.columns(3)
+                idx = 0
+                for nom_col, val in ligne_eq.items():
+                    if pd.notna(val) and str(val).strip() != "":
+                        cols[idx % 3].write(f"**{nom_col} :** {val}")
+                        idx += 1
 
-            # Recherche plein texte
-            search_interv = col_f3.text_input("Recherche mot-clé (panne, n° BC, obs...) :")
+            with sous_tab_pannes:
+                if df_interv is not None and not df_interv.empty and col_id_interv in df_interv.columns:
+                    pannes_trouvees = df_interv[df_interv[col_id_interv].astype(str).str.strip() == str(valeur_num).strip()]
+                    if not pannes_trouvees.empty:
+                        st.success(f"{len(pannes_trouvees)} intervention(s) trouvée(s) pour cet appareil.")
+                        st.dataframe(colonnes_utiles_interventions(pannes_trouvees), use_container_width=True)
+                    else:
+                        st.info("Aucune intervention enregistrée pour cet équipement.")
+                else:
+                    st.info("Aucun fichier d'interventions chargé.")
 
-            # Application des filtres
-            filtered_interv = df_interv_clean
-            if selected_tech != "Tous":
-                filtered_interv = filtered_interv[filtered_interv["Techn."].astype(str) == selected_tech]
-            if selected_cadre != "Tous":
-                filtered_interv = filtered_interv[filtered_interv["Cadre"].astype(str) == selected_cadre]
-            if search_interv:
-                filtered_interv = filtered_interv[filtered_interv.apply(lambda r: r.astype(str).str.contains(search_interv, case=False).any(), axis=1)]
+# =========================================================
+# SECTION 2 : TOUTES LES INTERVENTIONS (TEST_2)
+# =========================================================
+with onglet_interventions:
+    if df_interv is None:
+        st.error(f"Fichier `{FICHIER_INTERVENTION}` non trouvé sur GitHub.")
+    else:
+        st.subheader("Registre complet de toutes les interventions")
+        st.caption("💡 Cliquez sur une intervention pour afficher le compte-rendu complet.")
 
-            st.write(f"Affichage de **{len(filtered_interv)}** intervention(s)")
+        df_in_propre = colonnes_utiles_interventions(df_interv)
 
-            # Tableau cliquable des interventions
-            selection_int = st.dataframe(
-                filtered_interv,
-                use_container_width=True,
-                on_select="rerun",
-                selection_mode="single-row"
-            )
+        col_t, col_c, col_r = st.columns(3)
+        liste_techs = ["Tous"]
+        if "Techn." in df_in_propre.columns:
+            liste_techs += [str(t) for t in df_in_propre["Techn."].dropna().unique() if str(t).strip() != ""]
+        tech_choisi = col_t.selectbox("Filtrer par technicien :", liste_techs)
 
-            # Affichage du rapport complet si on clique sur une ligne d'intervention
-            selected_rows_int = selection_int.selection.rows if hasattr(selection_int, "selection") else []
-            if len(selected_rows_int) > 0:
-                int_row = filtered_interv.iloc[selected_rows_int[0]]
-                st.markdown("---")
-                st.markdown(f"### 🛠️ Détail de l'intervention : **{int_row.get('N° Interv.', 'Sans N°')}**")
-                
-                c_det1, c_det2 = st.columns(2)
-                c_det1.write(f"**N° Équipement :** {int_row.get(interv_id_col, 'N/A')}")
-                c_det1.write(f"**Date début :** {int_row.get('Début', 'N/A')}")
-                c_det1.write(f"**Technicien :** {int_row.get('Techn.', 'N/A')}")
-                c_det1.write(f"**Cadre :** {int_row.get('Cadre', 'N/A')}")
+        liste_cadres = ["Tous"]
+        if "Cadre" in df_in_propre.columns:
+            liste_cadres += [str(c) for c in df_in_propre["Cadre"].dropna().unique() if str(c).strip() != ""]
+        cadre_choisi = col_c.selectbox("Filtrer par type (Cadre) :", liste_cadres)
 
-                c_det2.write(f"**Fournisseur :** {int_row.get('Fournisseur', 'N/A')}")
-                c_det2.write(f"**N° Commande / BC :** {int_row.get('N° BC', 'N/A')}")
-                c_det2.write(f"**Date fin :** {int_row.get('Fin', 'N/A')}")
+        texte_recherche = col_r.text_input("Rechercher dans les remarques/pannes :")
 
-                st.info(f"**Observations lors de l'appel (Panne) :**\n\n{int_row.get('Observations lors de l\'appel', 'Aucune note')}")
-                st.success(f"**Observations technique (Réparation) :**\n\n{int_row.get('Observations technique', 'Aucune note')}")
+        vue_interv = df_in_propre
+        if tech_choisi != "Tous":
+            vue_interv = vue_interv[vue_interv["Techn."].astype(str) == tech_choisi]
+        if cadre_choisi != "Tous":
+            vue_interv = vue_interv[vue_interv["Cadre"].astype(str) == cadre_choisi]
+        if texte_recherche:
+            vue_interv = vue_interv[vue_interv.apply(lambda r: r.astype(str).str.contains(texte_recherche, case=False).any(), axis=1)]
 
-        else:
-            st.info("Aucun registre d'interventions n'est présent sur GitHub. Déposez `TEST.XLS` ou `interventions.xlsx`.")
+        table_in = st.dataframe(
+            vue_interv,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
 
-    # ==========================================
-    # SECTION 3 : RECHERCHE RAPIDE DIRECTE
-    # ==========================================
-    with main_tabs[2]:
-        st.subheader("Recherche directe par numéro d'équipement")
-        equip_numbers = df_equip[auto_equip_col].dropna().astype(str).unique().tolist()
-        chosen_id = st.selectbox("Sélectionnez ou tapez le numéro :", equip_numbers, key="quick_search_box")
-        if chosen_id:
-            row_data = df_equip[df_equip[auto_equip_col].astype(str) == chosen_id].iloc[0]
+        lignes_sel_in = table_in.selection.rows if hasattr(table_in, "selection") else []
+        if len(lignes_sel_in) > 0:
+            ligne_panne = vue_interv.iloc[lignes_sel_in[0]]
             st.markdown("---")
-            display_equip_view(row_data, chosen_id, is_admin, auto_equip_col, interv_id_col)
+            st.markdown(f"### 🛠️ Rapport complet : Interv. n° **{ligne_panne.get('N° Interv.', 'N/A')}**")
+
+            r1, r2 = st.columns(2)
+            r1.write(f"**Appareil concerné :** {ligne_panne.get(col_id_interv, 'N/A')}")
+            r1.write(f"**Date début :** {ligne_panne.get('Début', 'N/A')}")
+            r1.write(f"**Technicien :** {ligne_panne.get('Techn.', 'N/A')}")
+            r1.write(f"**Cadre :** {ligne_panne.get('Cadre', 'N/A')}")
+
+            r2.write(f"**Fournisseur :** {ligne_panne.get('Fournisseur', 'N/A')}")
+            r2.write(f"**Date fin :** {ligne_panne.get('Fin', 'N/A')}")
+            r2.write(f"**N° Commande / BC :** {ligne_panne.get('N° BC', 'N/A')}")
+
+            st.info(f"**Motif de l'appel (Panne) :**\n\n{ligne_panne.get('Observations lors de l\'appel', 'Aucune observation')}")
+            st.success(f"**Travaux réalisés (Compte-rendu) :**\n\n{ligne_panne.get('Observations technique', 'Aucun compte-rendu')}")
