@@ -10,17 +10,17 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
 
-# Configuration de la page
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- FICHIERS GITHUB PERMANENTS ---
+# --- FICHIERS PERMANENTS SUR GITHUB ---
 EQUIP_FILE_DEFAULT = "Equipement 2026.xlsx"
+PANNE_FILE_DEFAULT = "codes_pannes.csv"
 INTERV_CANDIDATES = [
     "interventions.xlsx", "interventions.xls", "interventions.XLS",
     "TEST_2.XLS", "test_2.xls", "TEST_2.xlsx", "TEST.XLS", "test.xls"
 ]
 
-# --- BASE DE DONNÉES PAR DÉFAUT DES CODES PANNES ---
+# Codes d'erreurs par défaut (si codes_pannes.csv n'est pas encore sur GitHub)
 DEFAULT_ERRORS = [
     {
         "code": "E-02",
@@ -52,16 +52,13 @@ DEFAULT_ERRORS = [
     }
 ]
 
-if "error_db" not in st.session_state:
-    st.session_state.error_db = DEFAULT_ERRORS
-
-# --- 1. CHARGEMENT AUTOMATIQUE DES BASES EXCEL ---
+# --- 1. CHARGEMENT DES BASES DE DONNÉES ---
 @st.cache_data
 def load_all_data():
     df_eq = None
     df_in = None
     
-    # Équipements
+    # 1. Équipements
     if os.path.exists(EQUIP_FILE_DEFAULT):
         try:
             df_eq = pd.read_excel(EQUIP_FILE_DEFAULT)
@@ -69,7 +66,7 @@ def load_all_data():
         except Exception as e:
             st.sidebar.error(f"Erreur Equipements : {e}")
 
-    # Interventions
+    # 2. Interventions
     for fname in INTERV_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -88,7 +85,18 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
-# --- FONCTIONS UTILITAIRES & EXTRACTION ---
+# 3. Chargement permanent des codes pannes
+if "error_db" not in st.session_state:
+    if os.path.exists(PANNE_FILE_DEFAULT):
+        try:
+            df_p = pd.read_csv(PANNE_FILE_DEFAULT)
+            st.session_state.error_db = df_p.to_dict(orient="records")
+        except Exception:
+            st.session_state.error_db = DEFAULT_ERRORS
+    else:
+        st.session_state.error_db = DEFAULT_ERRORS
+
+# --- FONCTIONS UTILITAIRES ---
 def find_id_column(df):
     if df is None:
         return None
@@ -147,12 +155,8 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
     story = []
 
     title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Heading1'],
-        fontSize=13,
-        textColor=colors.HexColor("#0f172a"),
-        alignment=1,
-        spaceAfter=15
+        'DocTitle', parent=styles['Heading1'], fontSize=13,
+        textColor=colors.HexColor("#0f172a"), alignment=1, spaceAfter=15
     )
     story.append(Paragraph("FICHE D'INTERVENTION TECHNIQUE BIOMÉDICALE", title_style))
     story.append(Spacer(1, 10))
@@ -221,7 +225,7 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
     buffer.seek(0)
     return buffer
 
-# --- BARRE LATÉRALE : GESTION ACCÈS & ADMIN ---
+# --- BARRE LATÉRALE ---
 st.sidebar.title("🔐 Espace Accès")
 role = st.sidebar.radio("Profil d'accès :", ["Utilisateur (Consultation)", "Administrateur (Gestion)"])
 
@@ -233,23 +237,6 @@ if role == "Administrateur (Gestion)":
         st.sidebar.success("Mode Administrateur activé ✅")
     elif admin_password:
         st.sidebar.error("Mot de passe incorrect")
-
-if is_admin:
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📥 Remplacer manuellement")
-    up_eq = st.sidebar.file_uploader("Nouveau fichier Équipements (.xlsx)", type=["xlsx", "xls"], key="adm_up_eq")
-    if up_eq:
-        d_eq = pd.read_excel(up_eq)
-        d_eq.columns = [str(c).strip() for c in d_eq.columns]
-        st.session_state.df_equip = d_eq
-        st.sidebar.success("Équipements actualisés !")
-
-    up_in = st.sidebar.file_uploader("Nouveau fichier Interventions (.xlsx / .xls)", type=["xlsx", "xls"], key="adm_up_in")
-    if up_in:
-        d_in = pd.read_excel(up_in)
-        d_in.columns = [str(c).strip() for c in d_in.columns]
-        st.session_state.df_interv = d_in
-        st.sidebar.success("Interventions actualisées !")
 
 # --- TITRE & INDICATEURS PRINCIPAUX ---
 st.title("🏥 GMAO & Maintenance Biomédicale")
@@ -267,7 +254,7 @@ col_m3.metric("Codes pannes répertoriés", len(st.session_state.error_db))
 
 st.markdown("---")
 
-# --- NAVIGATION EN ONGLETS PRINCIPAUX ---
+# ONGLETS PRINCIPAUX
 onglets_app = st.tabs([
     "📋 Parc des Équipements", 
     "🛠️ Registre des Interventions", 
@@ -389,7 +376,7 @@ with onglets_app[1]:
             st.success(f"**Observations technique (Compte-rendu réparation) :**\n\n{int_row.get('Observations technique', 'Aucun compte-rendu')}")
 
 # =========================================================
-# ONGLET 3 : DIAGNOSTIC & CODES PANNES
+# ONGLET 3 : DIAGNOSTIC & CODES PANNES (AVEC SAUVEGARDE PERMANENTE)
 # =========================================================
 with onglets_app[2]:
     col_d_left, col_d_right = st.columns([1, 2])
@@ -400,8 +387,6 @@ with onglets_app[2]:
             equip_list = df_equip[auto_equip_col].dropna().astype(str).unique().tolist()
             chosen_inv = st.selectbox("Sélectionner dans le parc :", equip_list, key="diag_inv")
             row_sel = df_equip[df_equip[auto_equip_col].astype(str) == chosen_inv].iloc[0]
-            
-            # Nom et service
             nom_appareil = row_sel.get("Nom", row_sel.get("Désignation", "Appareil médical"))
             service_app = row_sel.get("Nom UF", row_sel.get("Service", "Atelier Biomédical"))
             st.info(f"**Désignation :** {nom_appareil}\n\n**Service :** {service_app}")
@@ -413,6 +398,7 @@ with onglets_app[2]:
         st.markdown("---")
         st.subheader("📄 Manuel Constructeur (PDF)")
         uploaded_pdf = st.file_uploader("Charger une notice ou manuel technique", type=["pdf"], key="pdf_manual")
+        
         if uploaded_pdf is not None:
             if st.button("📥 Extraire les codes erreurs du PDF", use_container_width=True):
                 with st.spinner("Analyse du manuel technique en cours..."):
@@ -422,6 +408,19 @@ with onglets_app[2]:
                         st.success(f"✔ {len(new_errors)} codes pannes extraits et ajoutés !")
                     else:
                         st.warning("Aucun code panne conventionnel détecté dans ce fichier.")
+
+        # BOUTON POUR SAUVEGARDER SUR GITHUB
+        st.markdown("#### 💾 Sauvegarder pour toujours")
+        df_export_pannes = pd.DataFrame(st.session_state.error_db)
+        csv_bytes = df_export_pannes.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Télécharger codes_pannes.csv",
+            data=csv_bytes,
+            file_name="codes_pannes.csv",
+            mime="text/csv",
+            help="Téléchargez ce fichier et déposez-le sur GitHub : les codes pannes ne s'effaceront plus jamais !",
+            use_container_width=True
+        )
 
     with col_d_right:
         st.subheader("🔍 Recherche de Solution Constructeur")
@@ -456,7 +455,7 @@ with onglets_app[2]:
 
         tech_intervenant = st.text_input("Nom du technicien signataire :", value="Technicien Biomédical")
 
-        # Génération PDF certifié
+        # Fiche certifiée PDF
         pdf_file = generate_certified_pdf(
             inv_id=chosen_inv,
             equip_name=nom_appareil,
@@ -479,7 +478,7 @@ with onglets_app[2]:
 # ONGLET 4 : MATRICE DES PANNES COMPILÉES
 # =========================================================
 with onglets_app[3]:
-    st.subheader("📋 Matrice Globale des Pannes Extraites des Manuels")
+    st.subheader("📋 Matrice Globale des Pannes Extraites")
     filter_panne = st.text_input("Filtrer par code ou symptôme :", placeholder="Ex: E-02, rotor, débit, température...")
 
     matched_db = [
