@@ -12,6 +12,10 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
+# --- DOSSIER DE SAUVEGARDE DES MANUELS PDF ---
+DOSSIER_MANUELS = "manuels"
+os.makedirs(DOSSIER_MANUELS, exist_ok=True)
+
 # --- NOMS DES FICHIERS SUR GITHUB ---
 EQUIP_CANDIDATES = [
     "Equipements.xlsx", "Equipements.xls",
@@ -30,9 +34,10 @@ INTERV_CANDIDATES = [
 
 PANNE_FILE_DEFAULT = "codes_pannes.csv"
 
-# Codes de référence initiaux
+# Codes de référence initiaux (avec marque et modèle)
 DEFAULT_ERRORS = [
     {
+        "marque": "ICU MEDICAL",
         "equipement": "PLUM 360",
         "code": "E301",
         "cause": "Défaut d'occlusion en amont / capteur de pression",
@@ -41,6 +46,7 @@ DEFAULT_ERRORS = [
         "page": 84
     },
     {
+        "marque": "ABBOTT",
         "equipement": "I-STAT",
         "code": "BATTERY FAIL",
         "cause": "Batterie ne charge pas sur le socle",
@@ -49,12 +55,22 @@ DEFAULT_ERRORS = [
         "page": 32
     },
     {
+        "marque": "HETTICH",
         "equipement": "ROTANTA 460 RF",
         "code": "E-02",
         "cause": "Surchauffe cuve / Défaut tachymétrique",
         "solution": "Contrôler l'entrefer du capteur de vitesse (0,8 mm ± 0,2). Vérifier l'aimant d'arbre et le compresseur.",
         "source": "Manuel Hettich",
         "page": 48
+    },
+    {
+        "marque": "WASSENBURG",
+        "equipement": "WD40",
+        "code": "AL-04",
+        "cause": "Débit d'eau osmosée insuffisant",
+        "solution": "Nettoyer le tamis d'admission 50µm. Contrôler la pression statique amont (min 2,5 bars) et le débitmètre.",
+        "source": "Manuel WD40",
+        "page": 31
     }
 ]
 
@@ -93,20 +109,21 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
-# Base pannes persistante
+# Base pannes persistante (avec gestion de la colonne 'marque')
 if "error_db" not in st.session_state:
     if os.path.exists(PANNE_FILE_DEFAULT):
         try:
             df_p = pd.read_csv(PANNE_FILE_DEFAULT)
+            if "marque" not in df_p.columns:
+                df_p["marque"] = "Général"
             st.session_state.error_db = df_p.to_dict(orient="records")
         except Exception:
             st.session_state.error_db = DEFAULT_ERRORS
     else:
         st.session_state.error_db = DEFAULT_ERRORS
 
-# --- FONCTIONS DE DÉTECTION PRÉCISE DES COLONNES ---
+# --- FONCTIONS DE DÉTECTION DES COLONNES ---
 def find_id_column(df):
-    """Trouve la colonne du N° d'équipement / inventaire."""
     if df is None:
         return None
     candidates = [
@@ -121,12 +138,30 @@ def find_id_column(df):
                 return col
     return df.columns[0] if len(df.columns) > 0 else None
 
-def find_uf_column(df):
-    """Trouve la colonne de l'UF / Service / Affectation."""
+def find_name_column(df):
+    """Trouve la colonne du Nom / Modèle de l'équipement."""
     if df is None:
         return None
-    candidates = ["nom uf", "code uf", "uf", "service", "affectation", "localisation", "pôle", "pole"]
-    for cand in candidates:
+    for cand in ["type/modèle", "modèle", "modele", "nom", "désignation", "designation"]:
+        for col in df.columns:
+            if cand in str(col).strip().lower():
+                return col
+    return df.columns[1] if len(df.columns) > 1 else None
+
+def find_brand_column(df):
+    """Trouve la colonne de la Marque / Constructeur."""
+    if df is None:
+        return None
+    for cand in ["marque", "constructeur", "fabricant"]:
+        for col in df.columns:
+            if cand in str(col).strip().lower():
+                return col
+    return None
+
+def find_uf_column(df):
+    if df is None:
+        return None
+    for cand in ["nom uf", "code uf", "uf", "service", "affectation", "localisation", "pôle", "pole"]:
         for col in df.columns:
             clean = str(col).strip().lower()
             if cand == clean or cand in clean:
@@ -134,11 +169,9 @@ def find_uf_column(df):
     return None
 
 def find_sn_column(df):
-    """Trouve la colonne du N° de Série (SN)."""
     if df is None:
         return None
-    candidates = ["n° serie", "n° série", "numero serie", "numéro de série", "sn", "s/n", "serie", "série"]
-    for cand in candidates:
+    for cand in ["n° serie", "n° série", "numero serie", "numéro de série", "sn", "s/n", "serie", "série"]:
         for col in df.columns:
             clean = str(col).strip().lower()
             if cand == clean or cand in clean:
@@ -158,41 +191,58 @@ def format_interventions_table(df):
         return df[present + others]
     return df
 
-def detecter_equipement_depuis_pdf(uploaded_file, df_equip):
-    if df_equip is None or df_equip.empty:
-        return os.path.splitext(uploaded_file.name)[0]
-
-    candidats = set()
-    colonnes_recherche = ["Type/Modèle", "Modèle", "Marque", "Nom", "Désignation"]
-    for col in colonnes_recherche:
-        if col in df_equip.columns:
-            vals = df_equip[col].dropna().astype(str).str.strip().unique()
-            for v in vals:
-                if len(v) >= 3 and not v.isnumeric():
-                    candidats.add(v)
-
-    candidats_tries = sorted(candidats, key=len, reverse=True)
-    nom_fichier = uploaded_file.name.upper()
-
-    for cand in candidats_tries:
-        if cand.upper() in nom_fichier:
-            return cand
-
+# --- DÉTECTION INTELLIGENTE MARQUE ET MODÈLE DEPUIS LE PDF ---
+def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
+    """Détecte la marque et le modèle à partir du nom du fichier et des premières pages."""
+    texte_intro = ""
     try:
         reader = PdfReader(uploaded_file)
-        intro = ""
         for p in reader.pages[:4]:
-            intro += (p.extract_text() or "") + " "
-        intro = intro.upper()
-        for cand in candidats_tries:
-            if cand.upper() in intro:
-                return cand
+            texte_intro += (p.extract_text() or "") + " "
     except Exception:
         pass
+    
+    texte_complet = (uploaded_file.name + " " + texte_intro).upper()
+    
+    # 1. Recherche de la marque
+    marque_trouvee = "Autre Marque"
+    marques_existantes = set()
+    col_marque = find_brand_column(df_equip)
+    if df_equip is not None and col_marque and col_marque in df_equip.columns:
+        marques_existantes.update(df_equip[col_marque].dropna().astype(str).str.strip().unique())
+    
+    # Ajout des marques déjà dans la matrice des pannes
+    for err in st.session_state.error_db:
+        if err.get("marque"):
+            marques_existantes.add(err["marque"])
+            
+    marques_existantes.update(["ICU MEDICAL", "HETTICH", "ABBOTT", "WASSENBURG", "THE SURGICAL CO", "DRAEGER", "PHILIPS", "GE HEALTHCARE"])
+    marques_triees = sorted([m for m in marques_existantes if len(m) >= 2], key=len, reverse=True)
+    
+    for m in marques_triees:
+        if m.upper() in texte_complet:
+            marque_trouvee = m
+            break
 
-    return os.path.splitext(uploaded_file.name)[0].replace("_", " ")
+    # 2. Recherche du modèle
+    modele_trouve = os.path.splitext(uploaded_file.name)[0].replace("_", " ").replace("-", " ")
+    col_nom = find_name_column(df_equip)
+    modeles_existants = set()
+    if df_equip is not None and col_nom and col_nom in df_equip.columns:
+        for val in df_equip[col_nom].dropna().astype(str).str.strip().unique():
+            if len(val) >= 3 and not val.isnumeric():
+                modeles_existants.add(val)
 
-def parse_pdf_errors(uploaded_file, nom_machine):
+    modeles_tries = sorted(modeles_existants, key=len, reverse=True)
+    for mod in modeles_tries:
+        if mod.upper() in texte_complet:
+            modele_trouve = mod
+            break
+
+    return marque_trouvee, modele_trouve
+
+# --- EXTRACTION DES ERREURS ---
+def parse_pdf_errors(uploaded_file, marque_machine, nom_machine):
     extracted = []
     reader = PdfReader(uploaded_file)
     regex = re.compile(
@@ -205,7 +255,8 @@ def parse_pdf_errors(uploaded_file, nom_machine):
         page_text = reader.pages[idx].extract_text() or ""
         for match in regex.finditer(page_text):
             extracted.append({
-                "equipement": nom_machine,
+                "marque": str(marque_machine).strip().upper(),
+                "equipement": str(nom_machine).strip(),
                 "code": match.group(1).upper(),
                 "cause": match.group(2).strip(),
                 "solution": match.group(3).strip(),
@@ -228,7 +279,7 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
     story.append(Spacer(1, 10))
 
     id_data = [
-        [Paragraph("<b>N° Inventaire / Équipement :</b>", styles['Normal']), Paragraph(str(inv_id), styles['Normal'])],
+        [Paragraph("<b>Identification / N° :</b>", styles['Normal']), Paragraph(str(inv_id), styles['Normal'])],
         [Paragraph("<b>Désignation / Matériel :</b>", styles['Normal']), Paragraph(str(equip_name), styles['Normal'])],
         [Paragraph("<b>Service d'affectation :</b>", styles['Normal']), Paragraph(str(equip_service), styles['Normal'])],
         [Paragraph("<b>Technicien intervenant :</b>", styles['Normal']), Paragraph(str(tech_name), styles['Normal'])],
@@ -297,8 +348,9 @@ st.title("🏥 GMAO & Diagnostic Biomédical")
 df_equip = st.session_state.df_equip
 df_interv = st.session_state.df_interv
 
-# Détection des clés clés
 auto_equip_col = find_id_column(df_equip)
+auto_name_col = find_name_column(df_equip)
+auto_brand_col = find_brand_column(df_equip)
 auto_uf_col = find_uf_column(df_equip)
 auto_sn_col = find_sn_column(df_equip)
 interv_id_col = find_id_column(df_interv) if df_interv is not None and not df_interv.empty else "N° Equipement"
@@ -314,19 +366,18 @@ onglets_app = st.tabs([
     "📋 Parc des Équipements", 
     "🛠️ Registre des Interventions", 
     "🩺 Diagnostic par Équipement",
-    "📚 Matrice des Pannes par Équipement"
+    "📚 Matrice des Pannes (Marques & Modèles)"
 ])
 
 # =========================================================
-# ONGLET 1 : RECHERCHE STRICTEMENT PAR N° ÉQUIPEMENT, UF, SN
+# ONGLET 1 : RECHERCHE PAR N° ÉQUIPEMENT, UF, SN
 # =========================================================
 with onglets_app[0]:
-    st.subheader("Recherche ciblée d'équipement")
+    st.subheader("Recherche ciblée dans le parc")
     
     if df_equip is None:
         st.error("⚠️ Fichier des équipements introuvable (`Equipements.xlsx`).")
     else:
-        # Affichage des colonnes cibles détectées
         cols_trouvees = []
         if auto_equip_col:
             cols_trouvees.append(f"**N° Équipement** (`{auto_equip_col}`)")
@@ -335,7 +386,7 @@ with onglets_app[0]:
         if auto_sn_col:
             cols_trouvees.append(f"**N° Série** (`{auto_sn_col}`)")
             
-        st.caption(f"🎯 Recherche active sur les champs : {' • '.join(cols_trouvees)}")
+        st.caption(f"🎯 Recherche stricte sur les colonnes : {' • '.join(cols_trouvees)}")
 
         q_eq = st.text_input(
             "Entrez un N° d'équipement, un code/nom d'UF ou un N° de série (SN) :",
@@ -346,18 +397,15 @@ with onglets_app[0]:
         if not q_eq:
             st.info("💡 Saisissez un N° d'équipement, une UF ou un SN pour afficher les fiches correspondantes.")
         else:
-            # Construction du filtre STRICT sur les 3 colonnes uniquement
             candidats_cibles = [c for c in [auto_equip_col, auto_uf_col, auto_sn_col] if c and c in df_equip.columns]
             
             if not candidats_cibles:
-                st.warning("Aucune colonne N° Équipement, UF ou N° de Série n'a été détectée dans le fichier.")
+                st.warning("Aucune colonne correspondante n'a été trouvée.")
                 resultats_eq = pd.DataFrame()
             else:
-                # Masque vectorisé rapide
                 masque = pd.Series(False, index=df_equip.index)
                 for col in candidats_cibles:
                     masque |= df_equip[col].astype(str).str.contains(q_eq, case=False, na=False)
-                
                 resultats_eq = df_equip[masque]
 
             nb_res = len(resultats_eq)
@@ -463,77 +511,98 @@ with onglets_app[1]:
             st.success(f"**Observations technique :**\n\n{int_row.get('Observations technique', 'Aucun compte-rendu')}")
 
 # =========================================================
-# ONGLET 3 : DIAGNOSTIC & ANALYSE DE MANUEL PDF
+# ONGLET 3 : DIAGNOSTIC (SÉLECTION PAR NOM & SAUVEGARDE PDF)
 # =========================================================
 with onglets_app[2]:
     col_d_left, col_d_right = st.columns([1, 2])
 
     with col_d_left:
-        st.subheader("🏷️ Choix de l'équipement")
-        if df_equip is not None and auto_equip_col is not None:
-            rech_equip_diag = st.text_input(
-                "Filtrer par N° Équipement, UF ou SN :",
-                placeholder="Tapez un N°, UF ou SN...",
-                key="filter_diag_crit"
-            ).strip()
-
-            cands_diag = [c for c in [auto_equip_col, auto_uf_col, auto_sn_col] if c and c in df_equip.columns]
-            if rech_equip_diag and cands_diag:
-                m_diag = pd.Series(False, index=df_equip.index)
-                for c in cands_diag:
-                    m_diag |= df_equip[c].astype(str).str.contains(rech_equip_diag, case=False, na=False)
-                options_diag = df_equip[m_diag].head(25)
-            else:
-                options_diag = df_equip.head(15)
-
-            liste_ids = options_diag[auto_equip_col].dropna().astype(str).unique().tolist()
-            chosen_inv = st.selectbox("Sélectionner l'appareil :", liste_ids if liste_ids else ["Aucun"], key="diag_inv_sel")
-            
-            if chosen_inv != "Aucun":
-                row_sel = df_equip[df_equip[auto_equip_col].astype(str) == chosen_inv].iloc[0]
-                nom_appareil = row_sel.get("Type/Modèle", row_sel.get("Nom", "Appareil médical"))
-                service_app = row_sel.get(auto_uf_col, "Atelier Biomédical") if auto_uf_col else "Atelier Biomédical"
-                sn_app = row_sel.get(auto_sn_col, "N/A") if auto_sn_col else "N/A"
-                st.info(f"**Modèle :** {nom_appareil}\n\n**UF :** {service_app}\n\n**SN :** `{sn_app}`")
-            else:
-                nom_appareil = "Appareil médical"
-                service_app = "Biomédical"
+        st.subheader("🏷️ Sélection de l'appareil par Modèle / Nom")
+        
+        # Récupération de la liste des noms/modèles
+        if df_equip is not None and auto_name_col:
+            modeles_uniques = sorted(df_equip[auto_name_col].dropna().astype(str).str.strip().unique().tolist())
         else:
-            chosen_inv = "2026-0034"
-            nom_appareil = "PLUM 360"
-            service_app = "Atelier Biomédical"
+            # Modèles connus dans la matrice si fichier non chargé
+            modeles_uniques = sorted(list({err.get("equipement", "") for err in st.session_state.error_db if err.get("equipement")}))
+
+        recherche_nom = st.text_input("Filtrer la liste des équipements :", placeholder="Tapez le modèle ou nom...")
+        
+        if recherche_nom:
+            modeles_affiches = [m for m in modeles_uniques if recherche_nom.lower() in m.lower()]
+        else:
+            modeles_affiches = modeles_uniques
+
+        nom_choisi = st.selectbox(
+            "Nom de l'équipement :", 
+            modeles_affiches if modeles_affiches else ["Autre / Inconnu"],
+            key="select_nom_equip"
+        )
+
+        # Extraction des infos associées (Marque, UF, etc.)
+        marque_appareil = "Constructeur"
+        service_app = "Atelier Biomédical"
+        if df_equip is not None and auto_name_col:
+            matching_rows = df_equip[df_equip[auto_name_col].astype(str).str.strip() == str(nom_choisi).strip()]
+            if not matching_rows.empty:
+                r_first = matching_rows.iloc[0]
+                if auto_brand_col and auto_brand_col in r_first:
+                    marque_appareil = str(r_first[auto_brand_col])
+                if auto_uf_col and auto_uf_col in r_first:
+                    service_app = str(r_first[auto_uf_col])
+
+        st.info(f"**Modèle :** {nom_choisi}\n\n**Marque :** {marque_appareil}\n\n**Service :** {service_app}")
 
         st.markdown("---")
-        st.subheader("📄 Scanner un Manuel (PDF)")
-        up_pdf = st.file_uploader("Déposer la notice technique", type=["pdf"], key="pdf_auto_diag")
+        st.subheader("📄 Scanner un Manuel Technique (PDF)")
+        up_pdf = st.file_uploader("Déposer une notice ou manuel constructeur", type=["pdf"], key="pdf_auto_diag")
+        
         if up_pdf is not None:
-            if st.button("🚀 Analyser et lier automatiquement", use_container_width=True):
-                with st.spinner("Analyse et détection du modèle..."):
-                    modele_detecte = detecter_equipement_depuis_pdf(up_pdf, df_equip)
-                    new_errs = parse_pdf_errors(up_pdf, nom_machine=str(modele_detecte))
-                    if new_errs:
-                        st.session_state.error_db = new_errs + st.session_state.error_db
-                        st.success(f"✔ Reconnu : **{modele_detecte}** ({len(new_errs)} codes pannes associés !)")
-                    else:
-                        st.warning("Aucun code standard détecté dans ce document.")
+            # 1. Sauvegarde automatique sur le disque local
+            chemin_sauvegarde = os.path.join(DOSSIER_MANUELS, up_pdf.name)
+            with open(chemin_sauvegarde, "wb") as f_out:
+                f_out.write(up_pdf.getbuffer())
+            st.caption(f"💾 *Fichier archivé automatiquement sous : `{chemin_sauvegarde}`*")
 
-        st.markdown("#### 💾 Sauvegarde permanente")
+            # 2. Analyse automatique Marque et Modèle
+            if st.button("🚀 Analyser et ajouter à la matrice", use_container_width=True):
+                with st.spinner("Détection de la marque, du modèle et extraction des codes pannes..."):
+                    marque_det, modele_det = detecter_marque_et_modele_pdf(up_pdf, df_equip)
+                    
+                    # Si l'utilisateur avait sélectionné un équipement spécifique, on le privilégie
+                    if nom_choisi and nom_choisi not in ["Autre / Inconnu"]:
+                        modele_final = nom_choisi
+                        marque_final = marque_appareil if marque_appareil != "Constructeur" else marque_det
+                    else:
+                        modele_final = modele_det
+                        marque_final = marque_det
+
+                    nouvelles_erreurs = parse_pdf_errors(up_pdf, marque_machine=marque_final, nom_machine=modele_final)
+                    
+                    if nouvelles_erreurs:
+                        st.session_state.error_db = nouvelles_erreurs + st.session_state.error_db
+                        st.success(f"✔ **Marque :** {marque_final} | **Modèle :** {modele_final} ({len(nouvelles_erreurs)} codes rattachés !)")
+                    else:
+                        st.warning(f"Notice enregistrée pour **{marque_final} - {modele_final}**, mais aucun code standard détecté.")
+
+        st.markdown("#### 💾 Sauvegarde permanente GitHub")
         df_export_p = pd.DataFrame(st.session_state.error_db)
         st.download_button(
             label="📥 Télécharger codes_pannes.csv",
             data=df_export_p.to_csv(index=False).encode("utf-8"),
             file_name="codes_pannes.csv",
             mime="text/csv",
-            help="Déposez ce fichier sur GitHub pour conserver définitivement les codes.",
+            help="Glissez ce fichier sur GitHub pour conserver définitivement les marques et codes.",
             use_container_width=True
         )
 
     with col_d_right:
-        st.subheader("🔍 Recherche de Solution")
-        symptom_in = st.text_input("Code alarme ou symptôme :", value="E301", key="symp_diag")
+        st.subheader("🔍 Recherche de Solution Constructeur")
+        symptom_in = st.text_input("Code alarme ou panne constatée :", value="E301", key="symp_diag")
 
-        model_str = str(nom_appareil).upper()
-        pannes_modele = [e for e in st.session_state.error_db if str(e.get("equipement", "")).upper() in model_str or model_str in str(e.get("equipement", "")).upper()]
+        # Recherche ciblée sur le modèle choisi en priorité
+        nom_upper = str(nom_choisi).upper()
+        pannes_modele = [e for e in st.session_state.error_db if str(e.get("equipement", "")).upper() in nom_upper or nom_upper in str(e.get("equipement", "")).upper()]
         
         q_upper = symptom_in.upper()
         found = next((e for e in pannes_modele if e["code"] in q_upper or e["cause"].upper() in q_upper), None)
@@ -541,9 +610,9 @@ with onglets_app[2]:
             found = next((e for e in st.session_state.error_db if e["code"] in q_upper or e["cause"].upper() in q_upper), None)
 
         if found:
-            res_text = f"""✔ SOLUTION IDENTIFIÉE POUR {found.get('equipement', nom_appareil)} ({found['source']} - Page {found['page']}) :
+            res_text = f"""✔ SOLUTION IDENTIFIÉE POUR {found.get('marque', '')} - {found.get('equipement', nom_choisi)} ({found['source']} - Page {found['page']}) :
 
-- Code panne : {found['code']} — {found['cause']}
+- Code alarme : {found['code']} — {found['cause']}
 - Action recommandée : {found['solution']}
 
 - Contrôles de sécurité requis (NF EN 62353) :
@@ -551,7 +620,7 @@ with onglets_app[2]:
   2. Mesure du courant de fuite à la terre / carcasse.
   3. Essai dynamique et validation des sécurités mécaniques."""
         else:
-            res_text = f"""Procédure générale pour {nom_appareil} : {symptom_in}
+            res_text = f"""Procédure générale pour {nom_choisi} : {symptom_in}
 
 1. Contrôler l'alimentation et les fusibles de la carte de puissance.
 2. Vérifier les connecteurs et faisceaux liés au circuit de mesure.
@@ -562,56 +631,76 @@ with onglets_app[2]:
         tech_nom = st.text_input("Technicien signataire :", value="Technicien Biomédical")
 
         pdf_doc = generate_certified_pdf(
-            inv_id=chosen_inv, equip_name=nom_appareil, equip_service=service_app,
-            symptom=symptom_in, resolution=res_text, tech_name=tech_nom
+            inv_id=nom_choisi, 
+            equip_name=f"{marque_appareil} {nom_choisi}", 
+            equip_service=service_app,
+            symptom=symptom_in, 
+            resolution=res_text, 
+            tech_name=tech_nom
         )
         st.download_button(
             label="📄 Télécharger la Fiche Certifiée (PDF)",
             data=pdf_doc,
-            file_name=f"Fiche_{chosen_inv}.pdf",
+            file_name=f"Fiche_{nom_choisi}.pdf",
             mime="application/pdf",
             type="primary",
             use_container_width=True
         )
 
 # =========================================================
-# ONGLET 4 : MATRICE DES PANNES PAR ÉQUIPEMENT
+# ONGLET 4 : MATRICE CLASSÉE PAR MARQUE PUIS MODÈLE
 # =========================================================
 with onglets_app[3]:
-    st.subheader("📚 Matrice des Pannes par Équipement")
+    st.subheader("📚 Matrice des Pannes (Classée par Marques & Modèles)")
     
     toutes_les_pannes = pd.DataFrame(st.session_state.error_db)
     
-    liste_equipements_connus = []
-    if not toutes_les_pannes.empty and "equipement" in toutes_les_pannes.columns:
-        liste_equipements_connus = sorted([str(e) for e in toutes_les_pannes["equipement"].dropna().unique() if str(e).strip() != ""])
+    if not toutes_les_pannes.empty:
+        if "marque" not in toutes_les_pannes.columns:
+            toutes_les_pannes["marque"] = "Général"
 
-    c_sel1, c_sel2 = st.columns([1, 2])
-    with c_sel1:
-        options_choix = ["Tous"] + liste_equipements_connus
-        equipement_choisi = st.selectbox("Choisir un modèle d'appareil :", options_choix)
-    
-    with c_sel2:
-        recherche_texte = st.text_input("Filtrer par mot-clé (code, cause...) :")
+        # 1. Liste des marques disponibles
+        marques_dispos = sorted([str(m) for m in toutes_les_pannes["marque"].dropna().unique() if str(m).strip() != ""])
 
-    pannes_filtrees = toutes_les_pannes
-    if equipement_choisi != "Tous":
-        pannes_filtrees = pannes_filtrees[pannes_filtrees["equipement"].astype(str) == equipement_choisi]
-    
-    if recherche_texte:
-        pannes_filtrees = pannes_filtrees[pannes_filtrees.apply(
-            lambda r: r.astype(str).str.contains(recherche_texte, case=False).any(), axis=1
-        )]
+        c_f1, c_f2, c_f3 = st.columns(3)
+        with c_f1:
+            choix_marque = st.selectbox("1. Choisir la Marque :", ["Toutes les marques"] + marques_dispos)
 
-    st.write(f"Affichage de **{len(pannes_filtrees)}** panne(s)")
+        # 2. Modèles filtrés selon la marque choisie
+        if choix_marque != "Toutes les marques":
+            sous_table_marque = toutes_les_pannes[toutes_les_pannes["marque"].astype(str) == choix_marque]
+            modeles_dispos = sorted([str(e) for e in sous_table_marque["equipement"].dropna().unique() if str(e).strip() != ""])
+        else:
+            modeles_dispos = sorted([str(e) for e in toutes_les_pannes["equipement"].dropna().unique() if str(e).strip() != ""])
 
-    if not pannes_filtrees.empty:
+        with c_f2:
+            choix_modele = st.selectbox("2. Choisir le Modèle :", ["Tous les modèles"] + modeles_dispos)
+
+        with c_f3:
+            recherche_texte = st.text_input("3. Mot-clé (code, alarme, pièce...) :")
+
+        # Application des filtres
+        pannes_filtrees = toutes_les_pannes
+        if choix_marque != "Toutes les marques":
+            pannes_filtrees = pannes_filtrees[pannes_filtrees["marque"].astype(str) == choix_marque]
+        if choix_modele != "Tous les modèles":
+            pannes_filtrees = pannes_filtrees[pannes_filtrees["equipement"].astype(str) == choix_modele]
+        if recherche_texte:
+            pannes_filtrees = pannes_filtrees[pannes_filtrees.apply(
+                lambda r: r.astype(str).str.contains(recherche_texte, case=False).any(), axis=1
+            )]
+
+        st.write(f"Affichage de **{len(pannes_filtrees)}** panne(s) répertoriée(s)")
+
+        # Affichage des cartes de pannes
         for _, err in pannes_filtrees.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([1, 4, 1])
                 with c1:
                     st.code(err.get("code", "N/A"))
-                    st.caption(f"🏷️ **{err.get('equipement', 'Général')}**")
+                    marque_tag = err.get("marque", "Général")
+                    equip_tag = err.get("equipement", "")
+                    st.caption(f"🏭 **{marque_tag}**\n\n🏷️ **{equip_tag}**")
                 with c2:
                     st.markdown(f"**Cause :** {err.get('cause', 'Non précisée')}")
                     st.write(err.get("solution", "Aucune solution renseignée"))
