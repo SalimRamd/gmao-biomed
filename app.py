@@ -12,14 +12,20 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- SOURCES SUR GITHUB ---
-EQUIP_FILE_DEFAULT = "Equipement 2026.xlsx"
-PANNE_FILE_DEFAULT = "codes_pannes.csv"
-INTERV_CANDIDATES = [
-    "interventions.xlsx", "interventions.xls", "interventions.XLS",
-    "TEST_2.XLS", "test_2.xls", "TEST_2.xlsx", "TEST.XLS", "test.xls"
+# --- NOMS DES FICHIERS POSSIBLES SUR GITHUB ---
+EQUIP_CANDIDATES = [
+    "Les Equipements.xlsx", "Les Equipements.xls", "Les Équipements.xlsx",
+    "les equipements.xlsx", "Equipement 2026.xlsx", "equipements.xlsx"
 ]
 
+INTERV_CANDIDATES = [
+    "Les Interventions.xlsx", "Les Interventions.xls", "les interventions.xlsx",
+    "interventions.xlsx", "interventions.xls", "TEST_2.XLS", "TEST.XLS"
+]
+
+PANNE_FILE_DEFAULT = "codes_pannes.csv"
+
+# Base de référence par défaut
 DEFAULT_ERRORS = [
     {
         "equipement": "PLUM 360",
@@ -32,8 +38,8 @@ DEFAULT_ERRORS = [
     {
         "equipement": "I-STAT",
         "code": "BATTERY FAIL",
-        "cause": "Batterie ne charge pas sur la base de recharge",
-        "solution": "Vérifier les connecteurs de charge sous l'appareil et sur le socle. Contrôler la tension de sortie du bloc secteur (8,4 Vcc).",
+        "cause": "Batterie ne charge pas sur le socle",
+        "solution": "Contrôler les connecteurs de charge sous l'appareil et sur le socle. Vérifier la tension (8,4 Vcc).",
         "source": "Manuel Abbott",
         "page": 32
     },
@@ -41,33 +47,29 @@ DEFAULT_ERRORS = [
         "equipement": "ROTANTA 460 RF",
         "code": "E-02",
         "cause": "Surchauffe cuve / Défaut tachymétrique",
-        "solution": "Contrôler l'entrefer du capteur de vitesse sous le bol (0,8 mm ± 0,2). Vérifier l'aimant d'arbre et le compresseur.",
+        "solution": "Contrôler l'entrefer du capteur de vitesse (0,8 mm ± 0,2). Vérifier l'aimant d'arbre et le compresseur.",
         "source": "Manuel Hettich",
         "page": 48
-    },
-    {
-        "equipement": "WD40",
-        "code": "AL-04",
-        "cause": "Débit d'eau osmosée insuffisant",
-        "solution": "Nettoyer le tamis d'admission 50µm. Contrôler la pression statique amont (min 2,5 bars) et le signal du débitmètre.",
-        "source": "Manuel WD40",
-        "page": 31
     }
 ]
 
-# --- 1. CHARGEMENT AUTOMATIQUE DES BASES ---
+# --- 1. CHARGEMENT AUTOMATIQUE DES DEUX FICHIERS ---
 @st.cache_data
 def load_all_data():
     df_eq = None
     df_in = None
     
-    if os.path.exists(EQUIP_FILE_DEFAULT):
-        try:
-            df_eq = pd.read_excel(EQUIP_FILE_DEFAULT)
-            df_eq.columns = [str(c).strip() for c in df_eq.columns]
-        except Exception as e:
-            st.sidebar.error(f"Erreur Equipements : {e}")
+    # 1. Recherche du fichier Équipements
+    for fname in EQUIP_CANDIDATES:
+        if os.path.exists(fname):
+            try:
+                df_eq = pd.read_excel(fname)
+                df_eq.columns = [str(c).strip() for c in df_eq.columns]
+                break
+            except Exception as e:
+                st.sidebar.error(f"Erreur {fname} : {e}")
 
+    # 2. Recherche du fichier Interventions
     for fname in INTERV_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -86,6 +88,7 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
+# Base pannes
 if "error_db" not in st.session_state:
     if os.path.exists(PANNE_FILE_DEFAULT):
         try:
@@ -96,7 +99,7 @@ if "error_db" not in st.session_state:
     else:
         st.session_state.error_db = DEFAULT_ERRORS
 
-# --- FONCTIONS UTILITAIRES ---
+# --- UTILITAIRES ---
 def find_id_column(df):
     if df is None:
         return None
@@ -127,7 +130,6 @@ def format_interventions_table(df):
         return df[present + others]
     return df
 
-# Détection intelligente du matériel depuis le manuel PDF
 def detecter_equipement_depuis_pdf(uploaded_file, df_equip):
     if df_equip is None or df_equip.empty:
         return os.path.splitext(uploaded_file.name)[0]
@@ -162,7 +164,6 @@ def detecter_equipement_depuis_pdf(uploaded_file, df_equip):
 
     return os.path.splitext(uploaded_file.name)[0].replace("_", " ")
 
-# Extraction des pannes depuis le texte du PDF
 def parse_pdf_errors(uploaded_file, nom_machine):
     extracted = []
     reader = PdfReader(uploaded_file)
@@ -262,19 +263,6 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
     buffer.seek(0)
     return buffer
 
-# --- BARRE LATÉRALE ---
-st.sidebar.title("🔐 Espace Accès")
-role = st.sidebar.radio("Profil d'accès :", ["Utilisateur (Consultation)", "Administrateur (Gestion)"])
-
-is_admin = False
-if role == "Administrateur (Gestion)":
-    admin_password = st.sidebar.text_input("Mot de passe administrateur :", type="password")
-    if admin_password == "biomed2026":
-        is_admin = True
-        st.sidebar.success("Mode Administrateur activé ✅")
-    elif admin_password:
-        st.sidebar.error("Mot de passe incorrect")
-
 # --- TITRE & INDICATEURS PRINCIPAUX ---
 st.title("🏥 GMAO & Diagnostic Biomédical")
 
@@ -299,69 +287,81 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : PARC DES ÉQUIPEMENTS
+# ONGLET 1 : PARC GLOBAL (SANS CHARGEMENT MASSIF)
 # =========================================================
 with onglets_app[0]:
+    st.subheader("Recherche ciblée dans le parc")
+    
     if df_equip is None:
-        st.error(f"⚠️ Le fichier `{EQUIP_FILE_DEFAULT}` n'a pas été trouvé sur GitHub.")
+        st.error("⚠️ Fichier des équipements introuvable (`Les Equipements.xlsx`).")
     else:
-        st.subheader("Inventaire général du parc biomédical")
-        st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche de l'équipement et son historique.")
-
-        q_eq = st.text_input("Filtrer les équipements (nom, modèle, marque, numéro...) :", key="filter_eq")
-        view_eq = df_equip
-        if q_eq:
-            view_eq = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(q_eq, case=False).any(), axis=1)]
-            st.write(f"{len(view_eq)} équipement(s) trouvé(s)")
-
-        select_eq = st.dataframe(
-            view_eq,
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="single-row"
+        q_eq = st.text_input(
+            "🔍 Tapez un numéro d'inventaire, modèle, marque ou service :",
+            placeholder="Ex: 2026-0269, Plum 360, Hettich, Pédiatrie...",
+            key="search_bar_eq"
         )
 
-        selected_rows_eq = select_eq.selection.rows if hasattr(select_eq, "selection") else []
-        if len(selected_rows_eq) > 0:
-            row_data = view_eq.iloc[selected_rows_eq[0]]
-            equip_val = row_data[auto_equip_col]
+        # Si le champ est vide, on n'affiche rien pour économiser les ressources
+        if not q_eq.strip():
+            st.info("💡 Saisissez un mot-clé dans la barre ci-dessus pour lancer la recherche (les résultats sont limités à 30 pour la fluidité).")
+        else:
+            masque = df_equip.apply(lambda r: r.astype(str).str.contains(q_eq, case=False).any(), axis=1)
+            resultats_eq = df_equip[masque]
 
-            st.markdown("---")
-            st.markdown(f"### 📋 Fiche Équipement : **{equip_val}**")
+            nb_res = len(resultats_eq)
+            if nb_res == 0:
+                st.warning("Aucun équipement ne correspond à votre recherche.")
+            else:
+                st.write(f"**{nb_res}** résultat(s) trouvé(s) (affichage limité aux 30 premiers) :")
+                vue_reduite = resultats_eq.head(30)
+                
+                sel_eq = st.dataframe(
+                    vue_reduite,
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="single-row"
+                )
 
-            tab_info, tab_hist = st.tabs(["📄 Fiche Signalétique", "🛠️ Historique des Interventions"])
+                selected_rows_eq = sel_eq.selection.rows if hasattr(sel_eq, "selection") else []
+                if len(selected_rows_eq) > 0:
+                    row_data = vue_reduite.iloc[selected_rows_eq[0]]
+                    equip_val = row_data[auto_equip_col]
 
-            with tab_info:
-                cols = st.columns(3)
-                idx = 0
-                for col_name, val in row_data.items():
-                    if pd.notna(val) and str(val).strip() != "":
-                        cols[idx % 3].write(f"**{col_name} :** {val}")
-                        idx += 1
+                    st.markdown("---")
+                    st.markdown(f"### 📋 Fiche Équipement : **{equip_val}**")
 
-            with tab_hist:
-                if df_interv is not None and not df_interv.empty and interv_id_col in df_interv.columns:
-                    match = df_interv[df_interv[interv_id_col].astype(str).str.strip() == str(equip_val).strip()]
-                    if not match.empty:
-                        st.success(f"{len(match)} intervention(s) archivée(s) pour cet appareil.")
-                        st.dataframe(format_interventions_table(match), use_container_width=True)
-                    else:
-                        st.info("Aucune intervention enregistrée pour cet équipement.")
-                else:
-                    st.warning("Le registre des interventions n'est pas encore chargé.")
+                    tab_info, tab_hist = st.tabs(["📄 Signalétique", "🛠️ Historique des pannes"])
+
+                    with tab_info:
+                        cols = st.columns(3)
+                        idx = 0
+                        for col_name, val in row_data.items():
+                            if pd.notna(val) and str(val).strip() != "":
+                                cols[idx % 3].write(f"**{col_name} :** {val}")
+                                idx += 1
+
+                    with tab_hist:
+                        if df_interv is not None and not df_interv.empty and interv_id_col in df_interv.columns:
+                            match = df_interv[df_interv[interv_id_col].astype(str).str.strip() == str(equip_val).strip()]
+                            if not match.empty:
+                                st.success(f"{len(match)} intervention(s) archivée(s) pour cet appareil.")
+                                st.dataframe(format_interventions_table(match), use_container_width=True)
+                            else:
+                                st.info("Aucune intervention enregistrée pour cet équipement.")
+                        else:
+                            st.warning("Le registre des interventions n'est pas encore chargé.")
 
 # =========================================================
 # ONGLET 2 : REGISTRE DES INTERVENTIONS
 # =========================================================
 with onglets_app[1]:
     if df_interv is None:
-        st.error("⚠️ Aucun fichier d'interventions trouvé sur GitHub.")
+        st.error("⚠️ Fichier des interventions introuvable (`Les Interventions.xlsx`).")
     else:
         st.subheader("Registre complet des pannes et interventions")
         df_in_clean = format_interventions_table(df_interv)
 
         cf1, cf2, cf3 = st.columns(3)
-
         techs = ["Tous"]
         if "Techn." in df_in_clean.columns:
             techs += [str(t) for t in df_in_clean["Techn."].dropna().unique() if str(t).strip() != ""]
@@ -382,10 +382,10 @@ with onglets_app[1]:
         if q_in:
             filtered_in = filtered_in[filtered_in.apply(lambda r: r.astype(str).str.contains(q_in, case=False).any(), axis=1)]
 
-        st.write(f"Affichage de **{len(filtered_in)}** intervention(s)")
+        st.write(f"Affichage de **{len(filtered_in)}** intervention(s) (premières lignes affichées) :")
 
         select_in = st.dataframe(
-            filtered_in,
+            filtered_in.head(50),
             use_container_width=True,
             on_select="rerun",
             selection_mode="single-row"
@@ -411,7 +411,7 @@ with onglets_app[1]:
             st.success(f"**Observations technique :**\n\n{int_row.get('Observations technique', 'Aucun compte-rendu')}")
 
 # =========================================================
-# ONGLET 3 : DIAGNOSTIC & ANALYSE AUTOMATIQUE DE MANUELS PDF
+# ONGLET 3 : DIAGNOSTIC & ANALYSE DE MANUEL PDF
 # =========================================================
 with onglets_app[2]:
     col_d_left, col_d_right = st.columns([1, 2])
@@ -419,31 +419,41 @@ with onglets_app[2]:
     with col_d_left:
         st.subheader("🏷️ Choix de l'équipement")
         if df_equip is not None and auto_equip_col is not None:
-            equip_list = df_equip[auto_equip_col].dropna().astype(str).unique().tolist()
-            chosen_inv = st.selectbox("Sélectionner dans le parc :", equip_list, key="diag_inv_sel")
-            row_sel = df_equip[df_equip[auto_equip_col].astype(str) == chosen_inv].iloc[0]
-            nom_appareil = row_sel.get("Type/Modèle", row_sel.get("Nom", "Appareil médical"))
-            service_app = row_sel.get("Nom UF", "Atelier Biomédical")
-            st.info(f"**Modèle identifié :** {nom_appareil}\n\n**Service :** {service_app}")
+            rech_equip_diag = st.text_input("Filtrer l'appareil à diagnostiquer :", placeholder="Tapez un N° ou modèle...")
+            if rech_equip_diag:
+                options_diag = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(rech_equip_diag, case=False).any(), axis=1)]
+            else:
+                options_diag = df_equip.head(15)
+
+            liste_ids = options_diag[auto_equip_col].dropna().astype(str).unique().tolist()
+            chosen_inv = st.selectbox("Sélectionner :", liste_ids if liste_ids else ["Aucun"], key="diag_inv_sel")
+            
+            if chosen_inv != "Aucun":
+                row_sel = df_equip[df_equip[auto_equip_col].astype(str) == chosen_inv].iloc[0]
+                nom_appareil = row_sel.get("Type/Modèle", row_sel.get("Nom", "Appareil médical"))
+                service_app = row_sel.get("Nom UF", "Atelier Biomédical")
+                st.info(f"**Modèle reconnu :** {nom_appareil}\n\n**Service :** {service_app}")
+            else:
+                nom_appareil = "Appareil médical"
+                service_app = "Biomédical"
         else:
-            chosen_inv = st.text_input("N° Inventaire / Équipement :", value="2026-0034")
-            nom_appareil = st.text_input("Modèle de l'appareil :", value="PLUM 360")
+            chosen_inv = "2026-0034"
+            nom_appareil = "PLUM 360"
             service_app = "Atelier Biomédical"
 
         st.markdown("---")
-        st.subheader("📄 Scanner un Manuel Constructeur (PDF)")
-        up_pdf = st.file_uploader("Déposer une notice technique ou manuel de service", type=["pdf"], key="pdf_auto_extract")
-        
+        st.subheader("📄 Scanner un Manuel (PDF)")
+        up_pdf = st.file_uploader("Déposer la notice technique", type=["pdf"], key="pdf_auto_diag")
         if up_pdf is not None:
             if st.button("🚀 Analyser et lier automatiquement", use_container_width=True):
-                with st.spinner("Reconnaissance du matériel et extraction des pannes..."):
+                with st.spinner("Analyse et détection du modèle..."):
                     modele_detecte = detecter_equipement_depuis_pdf(up_pdf, df_equip)
                     new_errs = parse_pdf_errors(up_pdf, nom_machine=str(modele_detecte))
                     if new_errs:
                         st.session_state.error_db = new_errs + st.session_state.error_db
-                        st.success(f"✔ Appareil reconnu : **{modele_detecte}** ({len(new_errs)} codes pannes extraits et rattachés !)")
+                        st.success(f"✔ Reconnu : **{modele_detecte}** ({len(new_errs)} codes pannes associés !)")
                     else:
-                        st.warning(f"Appareil identifié comme **{modele_detecte}**, mais aucun code standard n'a été détecté dans le document.")
+                        st.warning("Aucun code standard détecté dans ce document.")
 
         st.markdown("#### 💾 Sauvegarde permanente")
         df_export_p = pd.DataFrame(st.session_state.error_db)
@@ -452,13 +462,13 @@ with onglets_app[2]:
             data=df_export_p.to_csv(index=False).encode("utf-8"),
             file_name="codes_pannes.csv",
             mime="text/csv",
-            help="Glissez ce fichier sur GitHub pour conserver définitivement les codes extraits.",
+            help="Déposez ce fichier sur GitHub pour conserver définitivement les codes.",
             use_container_width=True
         )
 
     with col_d_right:
         st.subheader("🔍 Recherche de Solution")
-        symptom_in = st.text_input("Code alarme ou panne constatée :", value="E301", key="symp_in")
+        symptom_in = st.text_input("Code alarme ou symptôme :", value="E301", key="symp_diag")
 
         model_str = str(nom_appareil).upper()
         pannes_modele = [e for e in st.session_state.error_db if str(e.get("equipement", "")).upper() in model_str or model_str in str(e.get("equipement", "")).upper()]
@@ -486,7 +496,7 @@ with onglets_app[2]:
 3. Exécuter l'autodiagnostic en mode service constructeur.
 4. Effectuer les contrôles NF EN 62353 avant remise au service."""
 
-        st.text_area("Consignes de maintenance :", value=res_text, height=200)
+        st.text_area("Consignes de maintenance :", value=res_text, height=190)
         tech_nom = st.text_input("Technicien signataire :", value="Technicien Biomédical")
 
         pdf_doc = generate_certified_pdf(
@@ -510,10 +520,9 @@ with onglets_app[3]:
     
     toutes_les_pannes = pd.DataFrame(st.session_state.error_db)
     
+    liste_equipements_connus = []
     if not toutes_les_pannes.empty and "equipement" in toutes_les_pannes.columns:
         liste_equipements_connus = sorted([str(e) for e in toutes_les_pannes["equipement"].dropna().unique() if str(e).strip() != ""])
-    else:
-        liste_equipements_connus = []
 
     c_sel1, c_sel2 = st.columns([1, 2])
     with c_sel1:
@@ -521,7 +530,7 @@ with onglets_app[3]:
         equipement_choisi = st.selectbox("Choisir un modèle d'appareil :", options_choix)
     
     with c_sel2:
-        recherche_texte = st.text_input("Filtrer par mot-clé (code alarme, moteur, capteur...) :")
+        recherche_texte = st.text_input("Filtrer par mot-clé (code, cause...) :")
 
     pannes_filtrees = toutes_les_pannes
     if equipement_choisi != "Tous":
@@ -532,7 +541,7 @@ with onglets_app[3]:
             lambda r: r.astype(str).str.contains(recherche_texte, case=False).any(), axis=1
         )]
 
-    st.write(f"Affichage de **{len(pannes_filtrees)}** panne(s) répertoriée(s)")
+    st.write(f"Affichage de **{len(pannes_filtrees)}** panne(s)")
 
     if not pannes_filtrees.empty:
         for _, err in pannes_filtrees.iterrows():
@@ -547,4 +556,4 @@ with onglets_app[3]:
                 with c3:
                     st.caption(f"{err.get('source', '')}\nPage {err.get('page', '')}")
     else:
-        st.info("Aucune panne enregistrée pour cet équipement.")
+        st.info("Aucune panne enregistrée.")
