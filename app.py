@@ -12,11 +12,12 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- DOSSIER DE SAUVEGARDE DES MANUELS PDF ---
+# --- 1. DOSSIERS & FICHIERS PERMANENTS SUR DISQUE ---
 DOSSIER_MANUELS = "manuels"
 os.makedirs(DOSSIER_MANUELS, exist_ok=True)
 
-# --- NOMS DES FICHIERS SUR GITHUB ---
+PANNE_FILE_DEFAULT = "codes_pannes.csv"
+
 EQUIP_CANDIDATES = [
     "Equipements.xlsx", "Equipements.xls",
     "equipements.xlsx", "equipements.xls",
@@ -32,9 +33,7 @@ INTERV_CANDIDATES = [
     "TEST_2.XLS", "TEST.XLS", "Les Interventions.xlsx"
 ]
 
-PANNE_FILE_DEFAULT = "codes_pannes.csv"
-
-# Codes de référence initiaux (avec marque et modèle)
+# Codes de secours initiaux si le fichier CSV n'existe pas encore
 DEFAULT_ERRORS = [
     {
         "marque": "ICU MEDICAL",
@@ -74,13 +73,10 @@ DEFAULT_ERRORS = [
     }
 ]
 
-# --- 1. CHARGEMENT AUTOMATIQUE DES DEUX BASES ---
+# --- 2. CHARGEMENT DES BASES EXCEL ---
 @st.cache_data
 def load_all_data():
-    df_eq = None
-    df_in = None
-    
-    # Lecture Équipements
+    df_eq, df_in = None, None
     for fname in EQUIP_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -90,7 +86,6 @@ def load_all_data():
             except Exception as e:
                 st.sidebar.error(f"Erreur lecture {fname} : {e}")
 
-    # Lecture Interventions
     for fname in INTERV_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -109,20 +104,38 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
-# Base pannes persistante (avec gestion de la colonne 'marque')
-if "error_db" not in st.session_state:
+
+# --- 3. PERSISTANCE ANTI-F5 (ÉCRITURE/LECTURE DISQUE DIRECTE) ---
+def charger_ou_initialiser_pannes():
+    """Lit le fichier CSV s'il existe, sinon l'initialise et l'enregistre sur le disque."""
     if os.path.exists(PANNE_FILE_DEFAULT):
         try:
             df_p = pd.read_csv(PANNE_FILE_DEFAULT)
             if "marque" not in df_p.columns:
                 df_p["marque"] = "Général"
-            st.session_state.error_db = df_p.to_dict(orient="records")
+            return df_p.to_dict(orient="records")
         except Exception:
-            st.session_state.error_db = DEFAULT_ERRORS
-    else:
-        st.session_state.error_db = DEFAULT_ERRORS
+            pass
+    # Création du fichier sur le disque au 1er lancement
+    df_init = pd.DataFrame(DEFAULT_ERRORS)
+    df_init.to_csv(PANNE_FILE_DEFAULT, index=False, encoding="utf-8")
+    return DEFAULT_ERRORS
 
-# --- FONCTIONS DE DÉTECTION DES COLONNES ---
+# On charge les pannes depuis le disque dans la session state
+if "error_db" not in st.session_state:
+    st.session_state.error_db = charger_ou_initialiser_pannes()
+
+def sauvegarder_pannes_sur_disque(nouvelles_pannes_list):
+    """Fusionne les nouvelles pannes, dédoublonne, et écrit sur le disque immédiatement."""
+    # Met à jour la mémoire vive
+    st.session_state.error_db = nouvelles_pannes_list + st.session_state.error_db
+    # Écrit tout sur le disque de façon définitive
+    df_sauvegarde = pd.DataFrame(st.session_state.error_db)
+    df_sauvegarde = df_sauvegarde.drop_duplicates(subset=["equipement", "code"], keep="first")
+    df_sauvegarde.to_csv(PANNE_FILE_DEFAULT, index=False, encoding="utf-8")
+
+
+# --- 4. IDENTIFICATION DES COLONNES ---
 def find_id_column(df):
     if df is None:
         return None
@@ -139,7 +152,6 @@ def find_id_column(df):
     return df.columns[0] if len(df.columns) > 0 else None
 
 def find_name_column(df):
-    """Trouve la colonne du Nom / Modèle de l'équipement."""
     if df is None:
         return None
     for cand in ["type/modèle", "modèle", "modele", "nom", "désignation", "designation"]:
@@ -149,7 +161,6 @@ def find_name_column(df):
     return df.columns[1] if len(df.columns) > 1 else None
 
 def find_brand_column(df):
-    """Trouve la colonne de la Marque / Constructeur."""
     if df is None:
         return None
     for cand in ["marque", "constructeur", "fabricant"]:
@@ -191,9 +202,9 @@ def format_interventions_table(df):
         return df[present + others]
     return df
 
-# --- DÉTECTION INTELLIGENTE MARQUE ET MODÈLE DEPUIS LE PDF ---
+
+# --- 5. ANALYSE ET DÉTECTION PDF ---
 def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
-    """Détecte la marque et le modèle à partir du nom du fichier et des premières pages."""
     texte_intro = ""
     try:
         reader = PdfReader(uploaded_file)
@@ -204,14 +215,12 @@ def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
     
     texte_complet = (uploaded_file.name + " " + texte_intro).upper()
     
-    # 1. Recherche de la marque
     marque_trouvee = "Autre Marque"
     marques_existantes = set()
     col_marque = find_brand_column(df_equip)
     if df_equip is not None and col_marque and col_marque in df_equip.columns:
         marques_existantes.update(df_equip[col_marque].dropna().astype(str).str.strip().unique())
     
-    # Ajout des marques déjà dans la matrice des pannes
     for err in st.session_state.error_db:
         if err.get("marque"):
             marques_existantes.add(err["marque"])
@@ -224,7 +233,6 @@ def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
             marque_trouvee = m
             break
 
-    # 2. Recherche du modèle
     modele_trouve = os.path.splitext(uploaded_file.name)[0].replace("_", " ").replace("-", " ")
     col_nom = find_name_column(df_equip)
     modeles_existants = set()
@@ -241,7 +249,6 @@ def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
 
     return marque_trouvee, modele_trouve
 
-# --- EXTRACTION DES ERREURS ---
 def parse_pdf_errors(uploaded_file, marque_machine, nom_machine):
     extracted = []
     reader = PdfReader(uploaded_file)
@@ -342,7 +349,7 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
     buffer.seek(0)
     return buffer
 
-# --- TITRE & INDICATEURS PRINCIPAUX ---
+# --- 6. HEADER DE L'APPLICATION ---
 st.title("🏥 GMAO & Diagnostic Biomédical")
 
 df_equip = st.session_state.df_equip
@@ -370,7 +377,7 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : RECHERCHE PAR N° ÉQUIPEMENT, UF, SN
+# ONGLET 1 : PARC (FILTRE STRICT SUR N° ÉQUIPEMENT, UF, SN)
 # =========================================================
 with onglets_app[0]:
     st.subheader("Recherche ciblée dans le parc")
@@ -510,8 +517,9 @@ with onglets_app[1]:
             st.info(f"**Observations lors de l'appel :**\n\n{int_row.get('Observations lors de l\'appel', 'Aucune observation')}")
             st.success(f"**Observations technique :**\n\n{int_row.get('Observations technique', 'Aucun compte-rendu')}")
 
+
 # =========================================================
-# ONGLET 3 : DIAGNOSTIC (SÉLECTION PAR NOM & SAUVEGARDE PDF)
+# ONGLET 3 : DIAGNOSTIC (SÉLECTION PAR NOM & SAUVEGARDE PERMANENTE SUR DISQUE)
 # =========================================================
 with onglets_app[2]:
     col_d_left, col_d_right = st.columns([1, 2])
@@ -519,11 +527,9 @@ with onglets_app[2]:
     with col_d_left:
         st.subheader("🏷️ Sélection de l'appareil par Modèle / Nom")
         
-        # Récupération de la liste des noms/modèles
         if df_equip is not None and auto_name_col:
             modeles_uniques = sorted(df_equip[auto_name_col].dropna().astype(str).str.strip().unique().tolist())
         else:
-            # Modèles connus dans la matrice si fichier non chargé
             modeles_uniques = sorted(list({err.get("equipement", "") for err in st.session_state.error_db if err.get("equipement")}))
 
         recherche_nom = st.text_input("Filtrer la liste des équipements :", placeholder="Tapez le modèle ou nom...")
@@ -539,7 +545,6 @@ with onglets_app[2]:
             key="select_nom_equip"
         )
 
-        # Extraction des infos associées (Marque, UF, etc.)
         marque_appareil = "Constructeur"
         service_app = "Atelier Biomédical"
         if df_equip is not None and auto_name_col:
@@ -558,18 +563,17 @@ with onglets_app[2]:
         up_pdf = st.file_uploader("Déposer une notice ou manuel constructeur", type=["pdf"], key="pdf_auto_diag")
         
         if up_pdf is not None:
-            # 1. Sauvegarde automatique sur le disque local
+            # 1. Sauvegarde automatique du PDF localement
             chemin_sauvegarde = os.path.join(DOSSIER_MANUELS, up_pdf.name)
             with open(chemin_sauvegarde, "wb") as f_out:
                 f_out.write(up_pdf.getbuffer())
-            st.caption(f"💾 *Fichier archivé automatiquement sous : `{chemin_sauvegarde}`*")
+            st.caption(f"💾 *Fichier PDF archivé dans `{chemin_sauvegarde}`*")
 
-            # 2. Analyse automatique Marque et Modèle
-            if st.button("🚀 Analyser et ajouter à la matrice", use_container_width=True):
+            # 2. Analyse et écriture directe sur disque dur
+            if st.button("🚀 Analyser et sauvegarder définitivement", use_container_width=True):
                 with st.spinner("Détection de la marque, du modèle et extraction des codes pannes..."):
                     marque_det, modele_det = detecter_marque_et_modele_pdf(up_pdf, df_equip)
                     
-                    # Si l'utilisateur avait sélectionné un équipement spécifique, on le privilégie
                     if nom_choisi and nom_choisi not in ["Autre / Inconnu"]:
                         modele_final = nom_choisi
                         marque_final = marque_appareil if marque_appareil != "Constructeur" else marque_det
@@ -580,19 +584,21 @@ with onglets_app[2]:
                     nouvelles_erreurs = parse_pdf_errors(up_pdf, marque_machine=marque_final, nom_machine=modele_final)
                     
                     if nouvelles_erreurs:
-                        st.session_state.error_db = nouvelles_erreurs + st.session_state.error_db
-                        st.success(f"✔ **Marque :** {marque_final} | **Modèle :** {modele_final} ({len(nouvelles_erreurs)} codes rattachés !)")
+                        # Sauvegarde immédiate et définitive sur le disque (Anti-F5 Refresh)
+                        sauvegarder_pannes_sur_disque(nouvelles_erreurs)
+                        st.success(f"✔ **{len(nouvelles_erreurs)} codes** enregistrés de façon permanente pour **{marque_final} - {modele_final}** !")
+                        st.rerun() # Rafraichit l'interface sans vider les données
                     else:
-                        st.warning(f"Notice enregistrée pour **{marque_final} - {modele_final}**, mais aucun code standard détecté.")
+                        st.warning(f"Manuel enregistré pour **{marque_final} - {modele_final}**, mais aucun code standard détecté.")
 
-        st.markdown("#### 💾 Sauvegarde permanente GitHub")
+        # Bouton export de secours vers GitHub
         df_export_p = pd.DataFrame(st.session_state.error_db)
         st.download_button(
-            label="📥 Télécharger codes_pannes.csv",
+            label="💾 Télécharger codes_pannes.csv",
             data=df_export_p.to_csv(index=False).encode("utf-8"),
             file_name="codes_pannes.csv",
             mime="text/csv",
-            help="Glissez ce fichier sur GitHub pour conserver définitivement les marques et codes.",
+            help="Optionnel: exportez pour publier sur GitHub",
             use_container_width=True
         )
 
@@ -600,7 +606,6 @@ with onglets_app[2]:
         st.subheader("🔍 Recherche de Solution Constructeur")
         symptom_in = st.text_input("Code alarme ou panne constatée :", value="E301", key="symp_diag")
 
-        # Recherche ciblée sur le modèle choisi en priorité
         nom_upper = str(nom_choisi).upper()
         pannes_modele = [e for e in st.session_state.error_db if str(e.get("equipement", "")).upper() in nom_upper or nom_upper in str(e.get("equipement", "")).upper()]
         
@@ -648,7 +653,7 @@ with onglets_app[2]:
         )
 
 # =========================================================
-# ONGLET 4 : MATRICE CLASSÉE PAR MARQUE PUIS MODÈLE
+# ONGLET 4 : MATRICE (MARQUES & MODÈLES)
 # =========================================================
 with onglets_app[3]:
     st.subheader("📚 Matrice des Pannes (Classée par Marques & Modèles)")
@@ -659,14 +664,12 @@ with onglets_app[3]:
         if "marque" not in toutes_les_pannes.columns:
             toutes_les_pannes["marque"] = "Général"
 
-        # 1. Liste des marques disponibles
         marques_dispos = sorted([str(m) for m in toutes_les_pannes["marque"].dropna().unique() if str(m).strip() != ""])
 
         c_f1, c_f2, c_f3 = st.columns(3)
         with c_f1:
             choix_marque = st.selectbox("1. Choisir la Marque :", ["Toutes les marques"] + marques_dispos)
 
-        # 2. Modèles filtrés selon la marque choisie
         if choix_marque != "Toutes les marques":
             sous_table_marque = toutes_les_pannes[toutes_les_pannes["marque"].astype(str) == choix_marque]
             modeles_dispos = sorted([str(e) for e in sous_table_marque["equipement"].dropna().unique() if str(e).strip() != ""])
@@ -679,7 +682,6 @@ with onglets_app[3]:
         with c_f3:
             recherche_texte = st.text_input("3. Mot-clé (code, alarme, pièce...) :")
 
-        # Application des filtres
         pannes_filtrees = toutes_les_pannes
         if choix_marque != "Toutes les marques":
             pannes_filtrees = pannes_filtrees[pannes_filtrees["marque"].astype(str) == choix_marque]
@@ -692,7 +694,6 @@ with onglets_app[3]:
 
         st.write(f"Affichage de **{len(pannes_filtrees)}** panne(s) répertoriée(s)")
 
-        # Affichage des cartes de pannes
         for _, err in pannes_filtrees.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([1, 4, 1])
