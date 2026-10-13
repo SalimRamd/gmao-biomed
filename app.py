@@ -64,7 +64,7 @@ def load_all_data():
     df_eq = None
     df_in = None
     
-    # Lecture Equipements
+    # Lecture Équipements
     for fname in EQUIP_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -104,23 +104,46 @@ if "error_db" not in st.session_state:
     else:
         st.session_state.error_db = DEFAULT_ERRORS
 
-# --- OUTILS & ANALYSE ---
+# --- FONCTIONS DE DÉTECTION PRÉCISE DES COLONNES ---
 def find_id_column(df):
+    """Trouve la colonne du N° d'équipement / inventaire."""
     if df is None:
         return None
     candidates = [
         "n° equipement", "n° équipement", "numero equipement", "numéro équipement",
-        "n° inventaire", "numero inventaire", "numéro d'inventaire", "code équipement", "equipement", "équipement"
+        "n° inventaire", "numero inventaire", "numéro inventaire", "code equipement", 
+        "code équipement", "equipement", "équipement"
     ]
     for cand in candidates:
         for col in df.columns:
             clean = str(col).strip().lower()
             if cand in clean and "famille" not in clean:
                 return col
-    for col in df.columns:
-        if "famille" not in str(col).strip().lower():
-            return col
     return df.columns[0] if len(df.columns) > 0 else None
+
+def find_uf_column(df):
+    """Trouve la colonne de l'UF / Service / Affectation."""
+    if df is None:
+        return None
+    candidates = ["nom uf", "code uf", "uf", "service", "affectation", "localisation", "pôle", "pole"]
+    for cand in candidates:
+        for col in df.columns:
+            clean = str(col).strip().lower()
+            if cand == clean or cand in clean:
+                return col
+    return None
+
+def find_sn_column(df):
+    """Trouve la colonne du N° de Série (SN)."""
+    if df is None:
+        return None
+    candidates = ["n° serie", "n° série", "numero serie", "numéro de série", "sn", "s/n", "serie", "série"]
+    for cand in candidates:
+        for col in df.columns:
+            clean = str(col).strip().lower()
+            if cand == clean or cand in clean:
+                return col
+    return None
 
 def format_interventions_table(df):
     if df is None or df.empty:
@@ -274,7 +297,10 @@ st.title("🏥 GMAO & Diagnostic Biomédical")
 df_equip = st.session_state.df_equip
 df_interv = st.session_state.df_interv
 
+# Détection des clés clés
 auto_equip_col = find_id_column(df_equip)
+auto_uf_col = find_uf_column(df_equip)
+auto_sn_col = find_sn_column(df_equip)
 interv_id_col = find_id_column(df_interv) if df_interv is not None and not df_interv.empty else "N° Equipement"
 
 col_m1, col_m2, col_m3 = st.columns(3)
@@ -292,31 +318,53 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : PARC DES ÉQUIPEMENTS (RECHERCHE ÉCONOME EN RESSOURCES)
+# ONGLET 1 : RECHERCHE STRICTEMENT PAR N° ÉQUIPEMENT, UF, SN
 # =========================================================
 with onglets_app[0]:
-    st.subheader("Recherche ciblée dans le parc")
+    st.subheader("Recherche ciblée d'équipement")
     
     if df_equip is None:
-        st.error("⚠️ Fichier des équipements introuvable (`Equipements.xlsx`). Vérifiez son nom sur GitHub.")
+        st.error("⚠️ Fichier des équipements introuvable (`Equipements.xlsx`).")
     else:
-        q_eq = st.text_input(
-            "🔍 Tapez un numéro d'inventaire, un nom, une marque ou un modèle :",
-            placeholder="Ex: 2026-0269, Plum 360, Hettich, Pédiatrie...",
-            key="search_bar_eq"
-        )
+        # Affichage des colonnes cibles détectées
+        cols_trouvees = []
+        if auto_equip_col:
+            cols_trouvees.append(f"**N° Équipement** (`{auto_equip_col}`)")
+        if auto_uf_col:
+            cols_trouvees.append(f"**UF** (`{auto_uf_col}`)")
+        if auto_sn_col:
+            cols_trouvees.append(f"**N° Série** (`{auto_sn_col}`)")
+            
+        st.caption(f"🎯 Recherche active sur les champs : {' • '.join(cols_trouvees)}")
 
-        if not q_eq.strip():
-            st.info("💡 Saisissez un mot-clé dans la barre ci-dessus pour lancer la recherche (les résultats sont limités aux 30 premiers pour garantir la fluidité).")
+        q_eq = st.text_input(
+            "Entrez un N° d'équipement, un code/nom d'UF ou un N° de série (SN) :",
+            placeholder="Ex : 2026-0042, PEDIATRIE, SN-9941...",
+            key="search_bar_eq"
+        ).strip()
+
+        if not q_eq:
+            st.info("💡 Saisissez un N° d'équipement, une UF ou un SN pour afficher les fiches correspondantes.")
         else:
-            masque = df_equip.apply(lambda r: r.astype(str).str.contains(q_eq, case=False).any(), axis=1)
-            resultats_eq = df_equip[masque]
+            # Construction du filtre STRICT sur les 3 colonnes uniquement
+            candidats_cibles = [c for c in [auto_equip_col, auto_uf_col, auto_sn_col] if c and c in df_equip.columns]
+            
+            if not candidats_cibles:
+                st.warning("Aucune colonne N° Équipement, UF ou N° de Série n'a été détectée dans le fichier.")
+                resultats_eq = pd.DataFrame()
+            else:
+                # Masque vectorisé rapide
+                masque = pd.Series(False, index=df_equip.index)
+                for col in candidats_cibles:
+                    masque |= df_equip[col].astype(str).str.contains(q_eq, case=False, na=False)
+                
+                resultats_eq = df_equip[masque]
 
             nb_res = len(resultats_eq)
             if nb_res == 0:
-                st.warning("Aucun équipement ne correspond à votre recherche.")
+                st.warning(f"Aucun équipement trouvé avec « {q_eq} » dans le N° d'équipement, l'UF ou le SN.")
             else:
-                st.write(f"**{nb_res}** résultat(s) trouvé(s) (affichage limité aux 30 premiers) :")
+                st.write(f"**{nb_res}** appareil(s) trouvé(s) (affichage limité aux 30 premiers) :")
                 vue_reduite = resultats_eq.head(30)
                 
                 sel_eq = st.dataframe(
@@ -360,9 +408,9 @@ with onglets_app[0]:
 # =========================================================
 with onglets_app[1]:
     if df_interv is None:
-        st.error("⚠️ Fichier des interventions introuvable (`Interventions.xlsx`). Vérifiez son nom sur GitHub.")
+        st.error("⚠️ Fichier des interventions introuvable (`Interventions.xlsx`).")
     else:
-        st.subheader("Registre complet des pannes et interventions")
+        st.subheader("Registre complet des interventions")
         df_in_clean = format_interventions_table(df_interv)
 
         cf1, cf2, cf3 = st.columns(3)
@@ -386,7 +434,7 @@ with onglets_app[1]:
         if q_in:
             filtered_in = filtered_in[filtered_in.apply(lambda r: r.astype(str).str.contains(q_in, case=False).any(), axis=1)]
 
-        st.write(f"Affichage de **{len(filtered_in)}** intervention(s) (premières lignes affichées) :")
+        st.write(f"Affichage de **{len(filtered_in)}** intervention(s) :")
 
         select_in = st.dataframe(
             filtered_in.head(50),
@@ -423,20 +471,30 @@ with onglets_app[2]:
     with col_d_left:
         st.subheader("🏷️ Choix de l'équipement")
         if df_equip is not None and auto_equip_col is not None:
-            rech_equip_diag = st.text_input("Filtrer l'appareil à diagnostiquer :", placeholder="Tapez un N° ou modèle...")
-            if rech_equip_diag:
-                options_diag = df_equip[df_equip.apply(lambda r: r.astype(str).str.contains(rech_equip_diag, case=False).any(), axis=1)]
+            rech_equip_diag = st.text_input(
+                "Filtrer par N° Équipement, UF ou SN :",
+                placeholder="Tapez un N°, UF ou SN...",
+                key="filter_diag_crit"
+            ).strip()
+
+            cands_diag = [c for c in [auto_equip_col, auto_uf_col, auto_sn_col] if c and c in df_equip.columns]
+            if rech_equip_diag and cands_diag:
+                m_diag = pd.Series(False, index=df_equip.index)
+                for c in cands_diag:
+                    m_diag |= df_equip[c].astype(str).str.contains(rech_equip_diag, case=False, na=False)
+                options_diag = df_equip[m_diag].head(25)
             else:
                 options_diag = df_equip.head(15)
 
             liste_ids = options_diag[auto_equip_col].dropna().astype(str).unique().tolist()
-            chosen_inv = st.selectbox("Sélectionner :", liste_ids if liste_ids else ["Aucun"], key="diag_inv_sel")
+            chosen_inv = st.selectbox("Sélectionner l'appareil :", liste_ids if liste_ids else ["Aucun"], key="diag_inv_sel")
             
             if chosen_inv != "Aucun":
                 row_sel = df_equip[df_equip[auto_equip_col].astype(str) == chosen_inv].iloc[0]
                 nom_appareil = row_sel.get("Type/Modèle", row_sel.get("Nom", "Appareil médical"))
-                service_app = row_sel.get("Nom UF", "Atelier Biomédical")
-                st.info(f"**Modèle reconnu :** {nom_appareil}\n\n**Service :** {service_app}")
+                service_app = row_sel.get(auto_uf_col, "Atelier Biomédical") if auto_uf_col else "Atelier Biomédical"
+                sn_app = row_sel.get(auto_sn_col, "N/A") if auto_sn_col else "N/A"
+                st.info(f"**Modèle :** {nom_appareil}\n\n**UF :** {service_app}\n\n**SN :** `{sn_app}`")
             else:
                 nom_appareil = "Appareil médical"
                 service_app = "Biomédical"
