@@ -12,7 +12,7 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- 1. FICHIERS ET DOSSIERS PERMANENTS ---
+# --- 1. DOSSIERS & FICHIERS PERMANENTS SUR DISQUE ---
 DOSSIER_MANUELS = "manuels"
 os.makedirs(DOSSIER_MANUELS, exist_ok=True)
 
@@ -81,7 +81,7 @@ DEFAULT_ERRORS = [
     }
 ]
 
-# --- 2. CHARGEMENT ET PERSISTANCE DES DONNÉES ---
+# --- 2. CHARGEMENT ET PERSISTANCE ---
 @st.cache_data
 def load_all_data():
     df_eq, df_in = None, None
@@ -134,75 +134,45 @@ def enregistrer_pannes_disque(nouvelles_pannes):
     df_p = df_p.drop_duplicates(subset=["equipement", "code"], keep="first")
     df_p.to_csv(PANNE_FILE_DEFAULT, index=False, encoding="utf-8")
 
-# --- 3. DÉTECTION ET OUTILS DE RECHERCHE ROBUSTE ---
-def find_id_column(df):
+# --- 3. DÉTECTION PRÉCISE DES COLONNES ---
+def get_col_id_equip(df):
     if df is None:
         return None
-    candidates = [
-        "n° equipement", "n° équipement", "numero equipement", "numéro équipement",
-        "n° inventaire", "numero inventaire", "numéro inventaire", "code equipement", 
-        "code équipement", "equipement", "équipement"
-    ]
-    for cand in candidates:
+    for cand in ["n° equipement", "n° équipement", "numero equipement", "numéro équipement", "n° inventaire", "numero inventaire", "code equipement", "equipement", "équipement"]:
         for col in df.columns:
-            clean = str(col).strip().lower()
-            if cand in clean and "famille" not in clean:
+            c_clean = str(col).strip().lower()
+            if cand in c_clean and "famille" not in c_clean and "interv" not in c_clean:
                 return col
     return df.columns[0] if len(df.columns) > 0 else None
 
-def get_colonnes_cibles_equip(df):
-    if df is None or df.empty:
-        return []
-    cibles = []
-    for col in df.columns:
-        c_low = str(col).strip().lower()
-        is_id = any(term in c_low for term in ['n°', 'num', 'code', 'inv', 'equip', 'id', 'mat']) and 'famille' not in c_low
-        is_uf = any(term in c_low for term in ['uf', 'service', 'affect', 'secteur', 'pole', 'loc'])
-        is_sn = any(term in c_low for term in ['serie', 'série', 'sn', 's/n'])
-        if is_id or is_uf or is_sn:
-            cibles.append(col)
-    return cibles if cibles else list(df.columns)
-
-def get_colonnes_cibles_interv(df):
-    if df is None or df.empty:
-        return []
-    cibles = []
-    for col in df.columns:
-        c_low = str(col).strip().lower()
-        is_int_id = any(term in c_low for term in ['interv', 'n°', 'num', 'bc'])
-        is_eq_id = any(term in c_low for term in ['equip', 'inv', 'mat'])
-        is_uf = any(term in c_low for term in ['uf', 'service', 'affect'])
-        is_sn = any(term in c_low for term in ['serie', 'série', 'sn'])
-        if is_int_id or is_eq_id or is_uf or is_sn:
-            cibles.append(col)
-    return cibles if cibles else list(df.columns)
-
-def filtrer_dataframe_robuste(df, query, colonnes_cibles):
-    """Effectue une recherche tolérante aux espaces, tirets et majuscules."""
-    if not query.strip():
-        return pd.DataFrame()
-    q_brut = query.strip().lower()
-    q_norm = q_brut.replace(" ", "").replace("-", "").replace("_", "")
-    
-    masque = pd.Series(False, index=df.index)
-    
-    # 1. Recherche dans les colonnes prioritaires
-    for col in colonnes_cibles:
-        if col in df.columns:
-            serie_brute = df[col].astype(str).str.strip().str.lower()
-            m = serie_brute.str.contains(q_brut, regex=False, na=False)
-            if len(q_norm) >= 2:
-                serie_norm = serie_brute.str.replace(" ", "", regex=False).str.replace("-", "", regex=False).str.replace("_", "", regex=False)
-                m |= serie_norm.str.contains(q_norm, regex=False, na=False)
-            masque |= m
-
-    # 2. Repli de secours : si aucun match, on scanne toutes les colonnes
-    if not masque.any():
+def get_col_uf(df):
+    if df is None:
+        return None
+    for cand in ["nom uf", "code uf", "uf", "service", "affectation", "localisation", "pôle", "pole"]:
         for col in df.columns:
-            serie_brute = df[col].astype(str).str.strip().str.lower()
-            masque |= serie_brute.str.contains(q_brut, regex=False, na=False)
-            
-    return df[masque]
+            c_clean = str(col).strip().lower()
+            if cand == c_clean or cand in c_clean:
+                return col
+    return None
+
+def get_col_sn(df):
+    if df is None:
+        return None
+    for cand in ["n° serie", "n° série", "numero serie", "numéro de série", "sn", "s/n", "serie", "série"]:
+        for col in df.columns:
+            c_clean = str(col).strip().lower()
+            if cand == c_clean or cand in c_clean:
+                return col
+    return None
+
+def get_col_id_interv(df):
+    if df is None:
+        return None
+    for cand in ["n° interv", "numero interv", "numéro interv", "n° intervention", "interv"]:
+        for col in df.columns:
+            if cand in str(col).strip().lower():
+                return col
+    return df.columns[0] if len(df.columns) > 0 else None
 
 def format_interventions_table(df):
     if df is None or df.empty:
@@ -217,7 +187,7 @@ def format_interventions_table(df):
         return df[present + others]
     return df
 
-# --- 4. EXTRACTION ET ANALYSE PDF ---
+# --- 4. DÉTECTION ET EXTRACTION PDF ---
 def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
     texte_intro = ""
     try:
@@ -229,7 +199,6 @@ def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
     
     texte_complet = (uploaded_file.name + " " + texte_intro).upper()
     
-    # Détection Marque
     marque_trouvee = "Autre Marque"
     marques_connues = set()
     if df_equip is not None:
@@ -246,7 +215,6 @@ def detecter_marque_et_modele_pdf(uploaded_file, df_equip):
             marque_trouvee = m
             break
 
-    # Détection Modèle
     modele_trouve = os.path.splitext(uploaded_file.name)[0].replace("_", " ").replace("-", " ")
     if df_equip is not None:
         modeles_connus = set()
@@ -368,8 +336,14 @@ st.title("🏥 GMAO & Diagnostic Biomédical")
 df_equip = st.session_state.df_equip
 df_interv = st.session_state.df_interv
 
-auto_equip_col = find_id_column(df_equip)
-interv_id_col = find_id_column(df_interv) if df_interv is not None and not df_interv.empty else "N° Equipement"
+col_eq_id = get_col_id_equip(df_equip)
+col_eq_uf = get_col_uf(df_equip)
+col_eq_sn = get_col_sn(df_equip)
+
+col_in_id = get_col_id_interv(df_interv)
+col_in_eq_id = get_col_id_equip(df_interv)
+col_in_uf = get_col_uf(df_interv)
+col_in_sn = get_col_sn(df_interv)
 
 col_m1, col_m2, col_m3 = st.columns(3)
 col_m1.metric("Équipements au parc", len(df_equip) if df_equip is not None else 0)
@@ -386,27 +360,26 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : PARC (RECHERCHE CORRIGÉE & AJOUT PERSISTANT)
+# ONGLET 1 : PARC (CHAMPS DE RECHERCHE STRICTS & AJOUT)
 # =========================================================
 with onglets_app[0]:
     st.subheader("Parc des Équipements")
     
-    # Formulaire d'ajout persistant
     with st.expander("➕ Ajouter un nouvel équipement au parc", expanded=False):
         with st.form("form_add_equip", clear_on_submit=True):
             ca1, ca2 = st.columns(2)
             n_id = ca1.text_input("N° Équipement / Inventaire * :", placeholder="Ex : 2026-0042")
-            n_nom = ca2.text_input("Nom / Désignation :", placeholder="Ex : Pousse-seringue électrique")
+            n_nom = ca2.text_input("Nom / Désignation :", placeholder="Ex : Pousse-seringue")
             
             ca3, ca4 = st.columns(2)
-            n_mq = ca3.text_input("Marque :", placeholder="Ex : Fresenius Kabi")
+            n_mq = ca3.text_input("Marque :", placeholder="Ex : Fresenius")
             n_mod = ca4.text_input("Type / Modèle :", placeholder="Ex : Injectomat Agilia")
             
             ca5, ca6 = st.columns(2)
             n_sn = ca5.text_input("N° de Série (SN) :", placeholder="Ex : SN-849201")
-            n_uf = ca6.text_input("UF / Service d'affectation :", placeholder="Ex : Réanimation")
+            n_uf = ca6.text_input("UF / Service :", placeholder="Ex : Réanimation")
             
-            btn_add_eq = st.form_submit_button("💾 Enregistrer l'équipement définitivement", use_container_width=True)
+            btn_add_eq = st.form_submit_button("💾 Enregistrer définitivement", use_container_width=True)
             
             if btn_add_eq:
                 if not n_id.strip():
@@ -416,20 +389,18 @@ with onglets_app[0]:
                     if df_equip is not None:
                         for c in df_equip.columns:
                             c_clean = str(c).strip().lower()
-                            if any(k in c_clean for k in ["uf", "service", "affect"]):
+                            if col_eq_uf and c == col_eq_uf:
                                 nouvelle_ligne[c] = n_uf.strip()
-                            elif any(k in c_clean for k in ["n° equip", "numero equip", "inventaire", "code equip"]) and 'famille' not in c_clean:
+                            elif col_eq_id and c == col_eq_id:
                                 nouvelle_ligne[c] = n_id.strip()
-                            elif any(k in c_clean for k in ["type/modèle", "modèle", "modele"]):
+                            elif col_eq_sn and c == col_eq_sn:
+                                nouvelle_ligne[c] = n_sn.strip()
+                            elif any(k in c_clean for k in ["modèle", "modele", "type"]):
                                 nouvelle_ligne[c] = n_mod.strip()
                             elif any(k in c_clean for k in ["marque", "constructeur"]):
                                 nouvelle_ligne[c] = n_mq.strip()
-                            elif any(k in c_clean for k in ["serie", "série", "sn", "s/n"]):
-                                nouvelle_ligne[c] = n_sn.strip()
-                            elif c_clean == "nom" or "désignation" in c_clean or "designation" in c_clean:
+                            elif "nom" in c_clean or "désignation" in c_clean:
                                 nouvelle_ligne[c] = n_nom.strip()
-                            elif c_clean in ["n°", "numero", "numéro", "code"]:
-                                nouvelle_ligne[c] = n_id.strip()
                             else:
                                 nouvelle_ligne[c] = ""
                     else:
@@ -443,7 +414,7 @@ with onglets_app[0]:
                         
                     st.session_state.df_equip.to_excel(FICHIER_EQUIP_ACTIF, index=False)
                     st.cache_data.clear()
-                    st.success(f"✔ Équipement **{n_id}** enregistré sur le disque !")
+                    st.success(f"✔ Équipement **{n_id}** enregistré définitivement sur le disque !")
                     st.rerun()
 
     st.markdown("---")
@@ -451,23 +422,45 @@ with onglets_app[0]:
     if df_equip is None:
         st.error(f"⚠️ Fichier des équipements introuvable (`{FICHIER_EQUIP_ACTIF}`).")
     else:
-        cibles_eq = get_colonnes_cibles_equip(df_equip)
-        st.caption(f"🎯 Colonnes analysées en priorité : **{', '.join(cibles_eq[:4])}**")
+        st.write("#### Filtrer les équipements :")
+        c_s1, c_s2, c_s3 = st.columns(3)
+        filtre_eq_id = c_s1.text_input("Par N° Équipement :", placeholder="Ex : 2026-", key="f_eq_id").strip()
+        filtre_eq_uf = c_s2.text_input("Par UF / Service :", placeholder="Ex : URGENCES, PEDIATRIE...", key="f_eq_uf").strip()
+        filtre_eq_sn = c_s3.text_input("Par N° de Série (SN) :", placeholder="Ex : SN-...", key="f_eq_sn").strip()
 
-        q_eq = st.text_input(
-            "🔍 Rechercher par N° d'équipement, UF ou N° de série :",
-            placeholder="Ex : 2026-, PEDIATRIE, SN-9941...",
-            key="search_bar_eq"
-        ).strip()
-
-        if not q_eq:
-            st.info("💡 Saisissez un mot-clé (ex: `2026-`) pour afficher les résultats.")
+        # Si aucun filtre n'est saisi, on n'affiche rien pour la fluidité
+        if not (filtre_eq_id or filtre_eq_uf or filtre_eq_sn):
+            st.info("💡 Saisissez un critère dans l'un des champs ci-dessus (ex: tapez `2026-` dans *N° Équipement* pour afficher uniquement ceux de 2026).")
         else:
-            resultats_eq = filtrer_dataframe_robuste(df_equip, q_eq, cibles_eq)
+            masque = pd.Series(True, index=df_equip.index)
+            
+            # Filtre STRICT N° Equipement
+            if filtre_eq_id and col_eq_id:
+                s_id = df_equip[col_eq_id].astype(str).str.strip().str.lower()
+                q_id = filtre_eq_id.lower()
+                m_id = s_id.str.contains(q_id, regex=False, na=False)
+                # Tolérance aux espaces / tirets
+                s_norm = s_id.str.replace(" ", "", regex=False).str.replace("-", "", regex=False).str.replace("_", "", regex=False)
+                q_norm = q_id.replace(" ", "").replace("-", "").replace("_", "")
+                if len(q_norm) >= 2:
+                    m_id |= s_norm.str.contains(q_norm, regex=False, na=False)
+                masque &= m_id
+
+            # Filtre STRICT UF
+            if filtre_eq_uf and col_eq_uf:
+                s_uf = df_equip[col_eq_uf].astype(str).str.strip().str.lower()
+                masque &= s_uf.str.contains(filtre_eq_uf.lower(), regex=False, na=False)
+
+            # Filtre STRICT N° Série
+            if filtre_eq_sn and col_eq_sn:
+                s_sn = df_equip[col_eq_sn].astype(str).str.strip().str.lower()
+                masque &= s_sn.str.contains(filtre_eq_sn.lower(), regex=False, na=False)
+
+            resultats_eq = df_equip[masque]
             nb_res = len(resultats_eq)
 
             if nb_res == 0:
-                st.warning(f"Aucun équipement trouvé pour « {q_eq} ».")
+                st.warning("Aucun équipement ne correspond à vos filtres.")
             else:
                 st.write(f"Affichage de **{nb_res}** résultat(s) (limité aux 30 premiers) :")
                 vue_reduite = resultats_eq.head(30)
@@ -482,7 +475,7 @@ with onglets_app[0]:
                 selected_rows_eq = sel_eq.selection.rows if hasattr(sel_eq, "selection") else []
                 if len(selected_rows_eq) > 0:
                     row_data = vue_reduite.iloc[selected_rows_eq[0]]
-                    equip_val = row_data[auto_equip_col]
+                    equip_val = row_data[col_eq_id]
 
                     st.markdown("---")
                     st.markdown(f"### 📋 Fiche Équipement : **{equip_val}**")
@@ -498,8 +491,8 @@ with onglets_app[0]:
                                 idx += 1
 
                     with tab_hist:
-                        if df_interv is not None and not df_interv.empty and interv_id_col in df_interv.columns:
-                            match = df_interv[df_interv[interv_id_col].astype(str).str.strip() == str(equip_val).strip()]
+                        if df_interv is not None and not df_interv.empty and col_in_eq_id in df_interv.columns:
+                            match = df_interv[df_interv[col_in_eq_id].astype(str).str.strip() == str(equip_val).strip()]
                             if not match.empty:
                                 st.success(f"{len(match)} intervention(s) archivée(s) pour cet appareil.")
                                 st.dataframe(format_interventions_table(match), use_container_width=True)
@@ -509,12 +502,11 @@ with onglets_app[0]:
                             st.warning("Le registre des interventions n'est pas encore chargé.")
 
 # =========================================================
-# ONGLET 2 : INTERVENTIONS (RECHERCHE CIBLÉE & AJOUT PERSISTANT)
+# ONGLET 2 : INTERVENTIONS (CHAMPS DE RECHERCHE STRICTS & AJOUT)
 # =========================================================
 with onglets_app[1]:
     st.subheader("Registre des Interventions")
     
-    # Formulaire d'ajout d'intervention
     with st.expander("➕ Enregistrer une nouvelle intervention", expanded=False):
         with st.form("form_add_interv", clear_on_submit=True):
             ci1, ci2, ci3 = st.columns(3)
@@ -534,7 +526,7 @@ with onglets_app[1]:
             ni_obs1 = st.text_area("Observations appel (Panne déclarée) :", height=70)
             ni_obs2 = st.text_area("Observations technique (Compte-rendu réparation) :", height=70)
             
-            btn_add_int = st.form_submit_button("💾 Enregistrer l'intervention définitivement", use_container_width=True)
+            btn_add_int = st.form_submit_button("💾 Enregistrer définitivement", use_container_width=True)
             
             if btn_add_int:
                 if not ni_eq.strip():
@@ -569,22 +561,33 @@ with onglets_app[1]:
         st.error(f"⚠️ Fichier des interventions introuvable (`{FICHIER_INTERV_ACTIF}`).")
     else:
         df_in_clean = format_interventions_table(df_interv)
-        cibles_in = get_colonnes_cibles_interv(df_in_clean)
+        st.write("#### Filtrer les interventions :")
+        
+        c_i1, c_i2, c_i3, c_i4 = st.columns(4)
+        filtre_in_num = c_i1.text_input("Par N° Intervention :", placeholder="Ex : INT-...", key="f_in_num").strip()
+        filtre_in_eq = c_i2.text_input("Par N° Équipement :", placeholder="Ex : 2026-...", key="f_in_eq").strip()
+        filtre_in_uf = c_i3.text_input("Par UF / Service :", placeholder="Ex : REA...", key="f_in_uf").strip()
+        filtre_in_sn = c_i4.text_input("Par N° Série :", placeholder="Ex : SN-...", key="f_in_sn").strip()
 
-        q_in = st.text_input(
-            "🔍 Rechercher par N° Intervention, N° Équipement, UF ou SN :",
-            placeholder="Ex : INT-2026, 2026-0042, PEDIATRIE, SN-9981...",
-            key="search_bar_in"
-        ).strip()
-
-        if not q_in:
-            st.info("💡 Saisissez un critère ci-dessus pour rechercher une intervention.")
+        if not (filtre_in_num or filtre_in_eq or filtre_in_uf or filtre_in_sn):
+            st.info("💡 Saisissez un critère dans l'un des champs ci-dessus pour afficher les interventions correspondantes.")
         else:
-            resultats_in = filtrer_dataframe_robuste(df_in_clean, q_in, cibles_in)
+            masque_in = pd.Series(True, index=df_in_clean.index)
+            
+            if filtre_in_num and col_in_id:
+                masque_in &= df_in_clean[col_in_id].astype(str).str.lower().str.contains(filtre_in_num.lower(), regex=False, na=False)
+            if filtre_in_eq and col_in_eq_id:
+                masque_in &= df_in_clean[col_in_eq_id].astype(str).str.lower().str.contains(filtre_in_eq.lower(), regex=False, na=False)
+            if filtre_in_uf and col_in_uf:
+                masque_in &= df_in_clean[col_in_uf].astype(str).str.lower().str.contains(filtre_in_uf.lower(), regex=False, na=False)
+            if filtre_in_sn and col_in_sn:
+                masque_in &= df_in_clean[col_in_sn].astype(str).str.lower().str.contains(filtre_in_sn.lower(), regex=False, na=False)
+
+            resultats_in = df_in_clean[masque_in]
             nb_res_in = len(resultats_in)
 
             if nb_res_in == 0:
-                st.warning(f"Aucune intervention trouvée pour « {q_in} ».")
+                st.warning("Aucune intervention ne correspond à vos filtres.")
             else:
                 st.write(f"Affichage de **{nb_res_in}** intervention(s) (limité aux 30 premières) :")
                 vue_in = resultats_in.head(30)
@@ -600,10 +603,10 @@ with onglets_app[1]:
                 if len(selected_rows_in) > 0:
                     int_row = vue_in.iloc[selected_rows_in[0]]
                     st.markdown("---")
-                    st.markdown(f"### 🛠️ Rapport d'intervention : **{int_row.get('N° Interv.', 'Sans N°')}**")
+                    st.markdown(f"### 🛠️ Rapport d'intervention : **{int_row.get(col_in_id, 'Sans N°')}**")
 
                     r1, r2 = st.columns(2)
-                    r1.write(f"**N° Équipement :** {int_row.get(interv_id_col, 'N/A')}")
+                    r1.write(f"**N° Équipement :** {int_row.get(col_in_eq_id, 'N/A')}")
                     r1.write(f"**Date début :** {int_row.get('Début', 'N/A')}")
                     r1.write(f"**Technicien :** {int_row.get('Techn.', 'N/A')}")
                     r1.write(f"**Cadre :** {int_row.get('Cadre', 'N/A')}")
@@ -612,18 +615,18 @@ with onglets_app[1]:
                     r2.write(f"**Date fin :** {int_row.get('Fin', 'N/A')}")
                     r2.write(f"**N° Commande / BC :** {int_row.get('N° BC', 'N/A')}")
 
-                    st.info(f"**Observations lors de l'appel :**\n\n{int_row.get('Observations lors de l\'appel', 'Aucune observation')}")
+                    st.info(f"**Observations appel :**\n\n{int_row.get('Observations lors de l\'appel', 'Aucune observation')}")
                     st.success(f"**Observations technique :**\n\n{int_row.get('Observations technique', 'Aucun compte-rendu')}")
 
 # =========================================================
-# ONGLET 3 : DIAGNOSTIC (SCAN PDF 100% AUTO & SOLUTIONS)
+# ONGLET 3 : DIAGNOSTIC (AUTO : GLISSER LE PDF & SOLUTIONS)
 # =========================================================
 with onglets_app[2]:
     col_d_left, col_d_right = st.columns([1, 1])
 
     with col_d_left:
         st.subheader("📄 Scanner un Manuel Constructeur (PDF)")
-        st.caption("Déposez la notice technique : la marque et le modèle seront automatiquement reconnus et ajoutés à la Matrice.")
+        st.caption("Déposez la notice : la marque et le modèle sont automatiquement identifiés et les pannes rangées dans la Matrice.")
         
         up_pdf = st.file_uploader("Notice ou manuel technique :", type=["pdf"], key="pdf_auto_diag")
         
@@ -634,14 +637,14 @@ with onglets_app[2]:
             st.caption(f"💾 *Fichier archivé dans `{chemin_pdf}`*")
 
             if st.button("🚀 Analyser et classer automatiquement dans la Matrice", use_container_width=True):
-                with st.spinner("Reconnaissance de la marque, du modèle et extraction des alarmes..."):
+                with st.spinner("Reconnaissance de la marque, du modèle et extraction des codes pannes..."):
                     mq_det, mod_det = detecter_marque_et_modele_pdf(up_pdf, df_equip)
                     nouvelles_errs = parse_pdf_errors(up_pdf, marque_machine=mq_det, nom_machine=mod_det)
                     
                     if nouvelles_errs:
                         enregistrer_pannes_disque(nouvelles_errs)
-                        st.success(f"✔ **{mq_det} — {mod_det}** identifié !")
-                        st.info(f"**{len(nouvelles_errs)} codes pannes** extraits et enregistrés définitivement dans la Matrice.")
+                        st.success(f"✔ **{mq_det} — {mod_det}** identifié avec succès !")
+                        st.info(f"**{len(nouvelles_errs)} codes pannes** extraits et sauvegardés définitivement dans la Matrice.")
                         st.rerun()
                     else:
                         st.warning(f"Manuel archivé pour **{mq_det} — {mod_det}**, mais aucun code alarme conventionnel n'a été repéré.")
