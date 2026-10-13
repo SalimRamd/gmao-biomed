@@ -12,7 +12,7 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- NOMS EXACTS DES FICHIERS SUR GITHUB ---
+# --- NOMS DES FICHIERS SUR GITHUB ---
 EQUIP_CANDIDATES = [
     "Equipements.xlsx", "Equipements.xls",
     "equipements.xlsx", "equipements.xls",
@@ -22,15 +22,15 @@ EQUIP_CANDIDATES = [
 ]
 
 INTERV_CANDIDATES = [
-    "interventions.xlsx", "interventions.xls",
     "Interventions.xlsx", "Interventions.xls",
+    "interventions.xlsx", "interventions.xls",
     "INTERVENTIONS.xlsx", "INTERVENTIONS.xls",
     "TEST_2.XLS", "TEST.XLS", "Les Interventions.xlsx"
 ]
 
 PANNE_FILE_DEFAULT = "codes_pannes.csv"
 
-# Base de référence par défaut
+# Codes de référence initiaux
 DEFAULT_ERRORS = [
     {
         "equipement": "PLUM 360",
@@ -64,7 +64,7 @@ def load_all_data():
     df_eq = None
     df_in = None
     
-    # 1. Équipements
+    # Lecture Equipements
     for fname in EQUIP_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -74,7 +74,7 @@ def load_all_data():
             except Exception as e:
                 st.sidebar.error(f"Erreur lecture {fname} : {e}")
 
-    # 2. Interventions
+    # Lecture Interventions
     for fname in INTERV_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -104,7 +104,7 @@ if "error_db" not in st.session_state:
     else:
         st.session_state.error_db = DEFAULT_ERRORS
 
-# --- UTILITAIRES ---
+# --- OUTILS & ANALYSE ---
 def find_id_column(df):
     if df is None:
         return None
@@ -306,7 +306,6 @@ with onglets_app[0]:
             key="search_bar_eq"
         )
 
-        # Si le champ est vide, rien n'est affiché pour économiser la mémoire et le chargement
         if not q_eq.strip():
             st.info("💡 Saisissez un mot-clé dans la barre ci-dessus pour lancer la recherche (les résultats sont limités aux 30 premiers pour garantir la fluidité).")
         else:
@@ -361,7 +360,7 @@ with onglets_app[0]:
 # =========================================================
 with onglets_app[1]:
     if df_interv is None:
-        st.error("⚠️ Fichier des interventions introuvable (`interventions.xlsx`). Vérifiez son nom sur GitHub.")
+        st.error("⚠️ Fichier des interventions introuvable (`Interventions.xlsx`). Vérifiez son nom sur GitHub.")
     else:
         st.subheader("Registre complet des pannes et interventions")
         df_in_clean = format_interventions_table(df_interv)
