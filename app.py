@@ -12,15 +12,20 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- NOMS DES FICHIERS POSSIBLES SUR GITHUB ---
+# --- NOMS EXACTS DES FICHIERS SUR GITHUB ---
 EQUIP_CANDIDATES = [
-    "Les Equipements.xlsx", "Les Equipements.xls", "Les Équipements.xlsx",
-    "les equipements.xlsx", "Equipement 2026.xlsx", "equipements.xlsx"
+    "Equipements.xlsx", "Equipements.xls",
+    "equipements.xlsx", "equipements.xls",
+    "Équipements.xlsx", "Équipements.xls",
+    "équipements.xlsx", "équipements.xls",
+    "Equipement 2026.xlsx", "Les Equipements.xlsx"
 ]
 
 INTERV_CANDIDATES = [
-    "Les Interventions.xlsx", "Les Interventions.xls", "les interventions.xlsx",
-    "interventions.xlsx", "interventions.xls", "TEST_2.XLS", "TEST.XLS"
+    "interventions.xlsx", "interventions.xls",
+    "Interventions.xlsx", "Interventions.xls",
+    "INTERVENTIONS.xlsx", "INTERVENTIONS.xls",
+    "TEST_2.XLS", "TEST.XLS", "Les Interventions.xlsx"
 ]
 
 PANNE_FILE_DEFAULT = "codes_pannes.csv"
@@ -53,13 +58,13 @@ DEFAULT_ERRORS = [
     }
 ]
 
-# --- 1. CHARGEMENT AUTOMATIQUE DES DEUX FICHIERS ---
+# --- 1. CHARGEMENT AUTOMATIQUE DES DEUX BASES ---
 @st.cache_data
 def load_all_data():
     df_eq = None
     df_in = None
     
-    # 1. Recherche du fichier Équipements
+    # 1. Équipements
     for fname in EQUIP_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -67,9 +72,9 @@ def load_all_data():
                 df_eq.columns = [str(c).strip() for c in df_eq.columns]
                 break
             except Exception as e:
-                st.sidebar.error(f"Erreur {fname} : {e}")
+                st.sidebar.error(f"Erreur lecture {fname} : {e}")
 
-    # 2. Recherche du fichier Interventions
+    # 2. Interventions
     for fname in INTERV_CANDIDATES:
         if os.path.exists(fname):
             try:
@@ -77,7 +82,7 @@ def load_all_data():
                 df_in.columns = [str(c).strip() for c in df_in.columns]
                 break
             except Exception as e:
-                st.sidebar.error(f"Erreur {fname} : {e}")
+                st.sidebar.error(f"Erreur lecture {fname} : {e}")
                 
     return df_eq, df_in
 
@@ -88,7 +93,7 @@ if "df_equip" not in st.session_state or st.session_state.df_equip is None:
 if "df_interv" not in st.session_state or st.session_state.df_interv is None:
     st.session_state.df_interv = default_interv
 
-# Base pannes
+# Base pannes persistante
 if "error_db" not in st.session_state:
     if os.path.exists(PANNE_FILE_DEFAULT):
         try:
@@ -287,23 +292,23 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : PARC GLOBAL (SANS CHARGEMENT MASSIF)
+# ONGLET 1 : PARC DES ÉQUIPEMENTS (RECHERCHE ÉCONOME EN RESSOURCES)
 # =========================================================
 with onglets_app[0]:
     st.subheader("Recherche ciblée dans le parc")
     
     if df_equip is None:
-        st.error("⚠️ Fichier des équipements introuvable (`Les Equipements.xlsx`).")
+        st.error("⚠️ Fichier des équipements introuvable (`Equipements.xlsx`). Vérifiez son nom sur GitHub.")
     else:
         q_eq = st.text_input(
-            "🔍 Tapez un numéro d'inventaire, modèle, marque ou service :",
+            "🔍 Tapez un numéro d'inventaire, un nom, une marque ou un modèle :",
             placeholder="Ex: 2026-0269, Plum 360, Hettich, Pédiatrie...",
             key="search_bar_eq"
         )
 
-        # Si le champ est vide, on n'affiche rien pour économiser les ressources
+        # Si le champ est vide, rien n'est affiché pour économiser la mémoire et le chargement
         if not q_eq.strip():
-            st.info("💡 Saisissez un mot-clé dans la barre ci-dessus pour lancer la recherche (les résultats sont limités à 30 pour la fluidité).")
+            st.info("💡 Saisissez un mot-clé dans la barre ci-dessus pour lancer la recherche (les résultats sont limités aux 30 premiers pour garantir la fluidité).")
         else:
             masque = df_equip.apply(lambda r: r.astype(str).str.contains(q_eq, case=False).any(), axis=1)
             resultats_eq = df_equip[masque]
@@ -356,7 +361,7 @@ with onglets_app[0]:
 # =========================================================
 with onglets_app[1]:
     if df_interv is None:
-        st.error("⚠️ Fichier des interventions introuvable (`Les Interventions.xlsx`).")
+        st.error("⚠️ Fichier des interventions introuvable (`interventions.xlsx`). Vérifiez son nom sur GitHub.")
     else:
         st.subheader("Registre complet des pannes et interventions")
         df_in_clean = format_interventions_table(df_interv)
