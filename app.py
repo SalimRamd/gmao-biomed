@@ -12,36 +12,13 @@ import streamlit as st
 
 st.set_page_config(page_title="GMAO Biomédicale & Diagnostic", layout="wide", page_icon="🏥")
 
-# --- 1. DOSSIERS ET FICHIERS SUR LE DISQUE ---
+# --- 1. DOSSIERS ET FICHIERS PERMANENTS ---
 DOSSIER_MANUELS = "manuels"
 os.makedirs(DOSSIER_MANUELS, exist_ok=True)
 
 PANNE_FILE_DEFAULT = "codes_pannes.csv"
 
-EQUIP_CANDIDATES = [
-    "Equipements.xlsx", "Equipements.xls",
-    "equipements.xlsx", "equipements.xls",
-    "Équipements.xlsx", "Équipements.xls",
-    "équipements.xlsx", "équipements.xls",
-    "Equipement 2026.xlsx", "Les Equipements.xlsx"
-]
-
-INTERV_CANDIDATES = [
-    "Interventions.xlsx", "Interventions.xls",
-    "interventions.xlsx", "interventions.xls",
-    "INTERVENTIONS.xlsx", "INTERVENTIONS.xls",
-    "TEST_2.XLS", "TEST.XLS", "Les Interventions.xlsx"
-]
-
-def detecter_fichier_existant(liste_candidats, nom_secours):
-    for f in liste_candidats:
-        if os.path.exists(f):
-            return f
-    return nom_secours
-
-FICHIER_EQUIP_ACTIF = detecter_fichier_existant(EQUIP_CANDIDATES, "Equipements.xlsx")
-FICHIER_INTERV_ACTIF = detecter_fichier_existant(INTERV_CANDIDATES, "Interventions.xlsx")
-
+# Codes initiaux par défaut
 DEFAULT_ERRORS = [
     {
         "marque": "ICU MEDICAL",
@@ -77,37 +54,66 @@ DEFAULT_ERRORS = [
     }
 ]
 
-# --- 2. CHARGEMENT ET PERSISTANCE ---
-@st.cache_data
-def load_all_data():
-    df_eq, df_in = None, None
-    for fname in EQUIP_CANDIDATES:
-        if os.path.exists(fname):
-            try:
-                df_eq = pd.read_excel(fname)
-                df_eq.columns = [str(c).strip() for c in df_eq.columns]
-                break
-            except Exception as e:
-                st.sidebar.error(f"Erreur lecture {fname} : {e}")
+# --- 2. CHARGEMENT ET DÉTECTION DYNAMIQUE DES FICHIERS EXCEL ---
+def charger_tous_les_fichiers():
+    """Détecte et rassemble tous les fichiers Excel du dossier sans bloquer sur un ancien cache."""
+    fichiers_dossier = [f for f in os.listdir('.') if (f.endswith('.xlsx') or f.endswith('.xls')) and not f.startswith('~')]
+    
+    # 1. Équipements : on charge tous les fichiers contenant "equip" ou le fichier par défaut
+    fichiers_eq = [f for f in fichiers_dossier if any(k in f.lower() for k in ['equip', 'matériel', 'parc'])]
+    if not fichiers_eq and os.path.exists("Equipements.xlsx"):
+        fichiers_eq = ["Equipements.xlsx"]
+    
+    dfs_eq = []
+    for f in fichiers_eq:
+        try:
+            temp = pd.read_excel(f)
+            temp.columns = [str(c).strip() for c in temp.columns]
+            dfs_eq.append(temp)
+        except Exception as e:
+            st.sidebar.error(f"Erreur lecture {f} : {e}")
+            
+    df_eq = pd.concat(dfs_eq, ignore_index=True) if dfs_eq else None
 
-    for fname in INTERV_CANDIDATES:
-        if os.path.exists(fname):
-            try:
-                df_in = pd.read_excel(fname)
-                df_in.columns = [str(c).strip() for c in df_in.columns]
-                break
-            except Exception as e:
-                st.sidebar.error(f"Erreur lecture {fname} : {e}")
-                
+    # 2. Interventions
+    fichiers_in = [f for f in fichiers_dossier if any(k in f.lower() for k in ['interv', 'test_2', 'test'])]
+    if not fichiers_in and os.path.exists("Interventions.xlsx"):
+        fichiers_in = ["Interventions.xlsx"]
+        
+    dfs_in = []
+    for f in fichiers_in:
+        try:
+            temp = pd.read_excel(f)
+            temp.columns = [str(c).strip() for c in temp.columns]
+            dfs_in.append(temp)
+        except Exception as e:
+            st.sidebar.error(f"Erreur lecture {f} : {e}")
+
+    df_in = pd.concat(dfs_in, ignore_index=True) if dfs_in else None
+
     return df_eq, df_in
 
-default_equip, default_interv = load_all_data()
+# Bouton de rechargement forcé dans la barre latérale
+with st.sidebar:
+    st.header("⚙️ Données & Fichiers")
+    if st.button("🔄 Forcer l'actualisation des fichiers", use_container_width=True):
+        st.cache_data.clear()
+        df_eq_fresh, df_in_fresh = charger_tous_les_fichiers()
+        st.session_state.df_equip = df_eq_fresh
+        st.session_state.df_interv = df_in_fresh
+        st.success("Bases réactualisées depuis le dossier !")
+        st.rerun()
 
+# Initialisation de la mémoire
 if "df_equip" not in st.session_state or st.session_state.df_equip is None:
-    st.session_state.df_equip = default_equip
-if "df_interv" not in st.session_state or st.session_state.df_interv is None:
-    st.session_state.df_interv = default_interv
+    eq_init, in_init = charger_tous_les_fichiers()
+    st.session_state.df_equip = eq_init
+    st.session_state.df_interv = in_init
 
+df_equip = st.session_state.df_equip
+df_interv = st.session_state.df_interv
+
+# Base pannes
 def charger_ou_initialiser_pannes():
     if os.path.exists(PANNE_FILE_DEFAULT):
         try:
@@ -130,23 +136,15 @@ def enregistrer_pannes_disque(nouvelles_pannes):
     df_p = df_p.drop_duplicates(subset=["equipement", "code"], keep="first")
     df_p.to_csv(PANNE_FILE_DEFAULT, index=False, encoding="utf-8")
 
-# --- 3. DÉTECTION PRÉCISE DES COLONNES PAR EN-TÊTE ET PAR CONTENU ---
+# --- 3. DÉTECTION PRÉCISE DES COLONNES ---
 def detecter_colonne_id_equip(df):
     if df is None or df.empty:
         return None
-    # 1. Vérification par contenu (format d'inventaire type 2026- ou 2022-)
-    for col in df.columns:
-        sample = df[col].dropna().astype(str).head(100)
-        if sample.str.contains(r'^\s*20\d{2}[-_/]', regex=True).any():
-            return col
-    # 2. Vérification par mot-clé
-    candidats = ["n° equipement", "n° équipement", "numero equipement", "numéro équipement",
-                 "n° inventaire", "numero inventaire", "numéro inventaire", "code equipement", 
-                 "code équipement", "code inventaire", "equipement", "équipement", "inventaire"]
-    for cand in candidats:
+    for cand in ["n° equipement", "n° équipement", "numero equipement", "numéro équipement",
+                 "n° inventaire", "numero inventaire", "code equipement", "equipement", "équipement"]:
         for col in df.columns:
             c = str(col).strip().lower()
-            if cand in c and "famille" not in c and "date" not in c:
+            if cand in c and "famille" not in c and "date" not in c and "interv" not in c:
                 return col
     return df.columns[0]
 
@@ -173,7 +171,7 @@ def detecter_colonne_sn(df):
 def detecter_colonne_id_interv(df):
     if df is None or df.empty:
         return None
-    for cand in ["n° interv", "numero interv", "numéro interv", "n° intervention", "interv"]:
+    for cand in ["n° interv", "numero interv", "numéro interv", "interv"]:
         for col in df.columns:
             if cand in str(col).strip().lower():
                 return col
@@ -337,9 +335,6 @@ def generate_certified_pdf(inv_id, equip_name, equip_service, symptom, resolutio
 # --- 5. EN-TÊTE PRINCIPAL ---
 st.title("🏥 GMAO & Diagnostic Biomédical")
 
-df_equip = st.session_state.df_equip
-df_interv = st.session_state.df_interv
-
 col_m1, col_m2, col_m3 = st.columns(3)
 col_m1.metric("Équipements au parc", len(df_equip) if df_equip is not None else 0)
 col_m2.metric("Interventions archivées", len(df_interv) if df_interv is not None else 0)
@@ -355,33 +350,20 @@ onglets_app = st.tabs([
 ])
 
 # =========================================================
-# ONGLET 1 : PARC DES ÉQUIPEMENTS
+# ONGLET 1 : PARC DES ÉQUIPEMENTS (FILTRE EXACT SANS LIMITE)
 # =========================================================
 with onglets_app[0]:
     st.subheader("Parc des Équipements")
     
     if df_equip is None:
-        st.error(f"⚠️ Fichier des équipements introuvable (`{FICHIER_EQUIP_ACTIF}`).")
+        st.warning("⚠️ Aucun fichier d'équipement chargé. Déposez vos fichiers Excel dans le dépôt ou utilisez le rechargement.")
     else:
-        # Détection des colonnes par défaut
-        col_id_auto = detecter_colonne_id_equip(df_equip)
-        col_uf_auto = detecter_colonne_uf(df_equip)
-        col_sn_auto = detecter_colonne_sn(df_equip)
+        col_eq_id = detecter_colonne_id_equip(df_equip)
+        col_eq_uf = detecter_colonne_uf(df_equip)
+        col_eq_sn = detecter_colonne_sn(df_equip)
 
-        # Configuration rapide des colonnes
-        with st.expander("⚙️ Colonnes associées pour la recherche", expanded=False):
-            col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
-            liste_cols = list(df_equip.columns)
-            idx_id = liste_cols.index(col_id_auto) if col_id_auto in liste_cols else 0
-            idx_uf = liste_cols.index(col_uf_auto) if col_uf_auto in liste_cols else 0
-            idx_sn = liste_cols.index(col_sn_auto) if col_sn_auto in liste_cols else 0
-
-            sel_col_id = col_cfg1.selectbox("Colonne N° Équipement :", liste_cols, index=idx_id)
-            sel_col_uf = col_cfg2.selectbox("Colonne UF / Service :", liste_cols, index=idx_uf)
-            sel_col_sn = col_cfg3.selectbox("Colonne N° de Série :", liste_cols, index=idx_sn)
-
-        # Formulaire d'ajout
-        with st.expander("➕ Ajouter un nouvel équipement au parc", expanded=False):
+        # Ajout direct d'un nouvel équipement
+        with st.expander("➕ Ajouter un nouvel équipement", expanded=False):
             with st.form("form_add_equip", clear_on_submit=True):
                 ca1, ca2 = st.columns(2)
                 n_id = ca1.text_input("N° Équipement / Inventaire * :", placeholder="Ex : 2026-0042")
@@ -402,11 +384,11 @@ with onglets_app[0]:
                         nouvelle_ligne = {}
                         for c in df_equip.columns:
                             c_clean = str(c).strip().lower()
-                            if c == sel_col_id:
+                            if col_eq_id and c == col_eq_id:
                                 nouvelle_ligne[c] = n_id.strip()
-                            elif c == sel_col_uf:
+                            elif col_eq_uf and c == col_eq_uf:
                                 nouvelle_ligne[c] = n_uf.strip()
-                            elif c == sel_col_sn:
+                            elif col_eq_sn and c == col_eq_sn:
                                 nouvelle_ligne[c] = n_sn.strip()
                             elif any(k in c_clean for k in ["modèle", "modele", "type"]):
                                 nouvelle_ligne[c] = n_mod.strip()
@@ -419,46 +401,32 @@ with onglets_app[0]:
                         
                         df_ajoute = pd.DataFrame([nouvelle_ligne])
                         st.session_state.df_equip = pd.concat([st.session_state.df_equip, df_ajoute], ignore_index=True)
-                        st.session_state.df_equip.to_excel(FICHIER_EQUIP_ACTIF, index=False)
+                        st.session_state.df_equip.to_excel("Equipements.xlsx", index=False)
                         st.cache_data.clear()
-                        st.success(f"✔ Équipement **{n_id}** enregistré sur le disque.")
+                        st.success(f"✔ Équipement **{n_id}** enregistré.")
                         st.rerun()
 
         st.markdown("---")
         
-        # Champs de recherche stricts
-        st.write("#### Recherche ciblée :")
+        # Filtres stricts (identiques à la méthode qui fonctionne pour les interventions)
+        st.write("#### Filtrer les équipements :")
         c_s1, c_s2, c_s3 = st.columns(3)
-        filtre_eq_id = c_s1.text_input("Par N° Équipement (strict) :", placeholder="Ex : 2026-", key="f_eq_id").strip()
-        filtre_eq_uf = c_s2.text_input("Par UF / Service :", placeholder="Ex : URGENCES, PEDIATRIE...", key="f_eq_uf").strip()
-        filtre_eq_sn = c_s3.text_input("Par N° de Série (SN) :", placeholder="Ex : SN-...", key="f_eq_sn").strip()
+        filtre_eq_id = c_s1.text_input("Par N° Équipement (ex: 2018-) :", key="f_eq_id").strip()
+        filtre_eq_uf = c_s2.text_input("Par UF / Service :", key="f_eq_uf").strip()
+        filtre_eq_sn = c_s3.text_input("Par N° de Série :", key="f_eq_sn").strip()
 
         if not (filtre_eq_id or filtre_eq_uf or filtre_eq_sn):
-            st.info("💡 Saisissez un critère dans l'un des champs ci-dessus (ex: tapez `2026-` dans *N° Équipement*).")
+            st.info("💡 Saisissez un critère ci-dessus (ex: tapez `2018-` dans *N° Équipement*).")
         else:
             masque = pd.Series(True, index=df_equip.index)
             
-            # 1. Filtre N° Équipement isolé et strict
-            if filtre_eq_id:
-                s_id = df_equip[sel_col_id].astype(str).str.strip().str.lower()
-                q_id = filtre_eq_id.lower()
-                m_id = s_id.str.contains(q_id, regex=False, na=False)
-                # Tolérance aux espaces / tirets
-                s_norm = s_id.str.replace(" ", "", regex=False).str.replace("-", "", regex=False).str.replace("_", "", regex=False)
-                q_norm = q_id.replace(" ", "").replace("-", "").replace("_", "")
-                if len(q_norm) >= 2:
-                    m_id |= s_norm.str.contains(q_norm, regex=False, na=False)
-                masque &= m_id
-
-            # 2. Filtre UF isolé
-            if filtre_eq_uf:
-                s_uf = df_equip[sel_col_uf].astype(str).str.strip().str.lower()
-                masque &= s_uf.str.contains(filtre_eq_uf.lower(), regex=False, na=False)
-
-            # 3. Filtre N° de Série isolé
-            if filtre_eq_sn:
-                s_sn = df_equip[sel_col_sn].astype(str).str.strip().str.lower()
-                masque &= s_sn.str.contains(filtre_eq_sn.lower(), regex=False, na=False)
+            # Application exacte de la logique fonctionnelle
+            if filtre_eq_id and col_eq_id:
+                masque &= df_equip[col_eq_id].astype(str).str.lower().str.contains(filtre_eq_id.lower(), regex=False, na=False)
+            if filtre_eq_uf and col_eq_uf:
+                masque &= df_equip[col_eq_uf].astype(str).str.lower().str.contains(filtre_eq_uf.lower(), regex=False, na=False)
+            if filtre_eq_sn and col_eq_sn:
+                masque &= df_equip[col_eq_sn].astype(str).str.lower().str.contains(filtre_eq_sn.lower(), regex=False, na=False)
 
             resultats_eq = df_equip[masque]
             nb_res = len(resultats_eq)
@@ -466,7 +434,7 @@ with onglets_app[0]:
             if nb_res == 0:
                 st.warning("Aucun équipement ne correspond à vos filtres.")
             else:
-                st.write(f"Affichage de **{nb_res}** résultat(s) :")
+                st.write(f"Affichage de **{nb_res}** équipement(s) trouvé(s) :")
                 
                 sel_eq = st.dataframe(
                     resultats_eq,
@@ -478,7 +446,7 @@ with onglets_app[0]:
                 selected_rows_eq = sel_eq.selection.rows if hasattr(sel_eq, "selection") else []
                 if len(selected_rows_eq) > 0:
                     row_data = resultats_eq.iloc[selected_rows_eq[0]]
-                    equip_val = row_data[sel_col_id]
+                    equip_val = row_data[col_eq_id]
 
                     st.markdown("---")
                     st.markdown(f"### 📋 Fiche Équipement : **{equip_val}**")
@@ -509,13 +477,13 @@ with onglets_app[0]:
                             st.warning("Le registre des interventions n'est pas encore chargé.")
 
 # =========================================================
-# ONGLET 2 : REGISTRE DES INTERVENTIONS
+# ONGLET 2 : REGISTRE DES INTERVENTIONS (SANS LIMITE)
 # =========================================================
 with onglets_app[1]:
     st.subheader("Registre des Interventions")
     
     if df_interv is None:
-        st.error(f"⚠️ Fichier des interventions introuvable (`{FICHIER_INTERV_ACTIF}`).")
+        st.warning("⚠️ Aucun fichier d'interventions chargé.")
     else:
         df_in_clean = format_interventions_table(df_interv)
         col_in_id = detecter_colonne_id_interv(df_in_clean)
@@ -560,9 +528,9 @@ with onglets_app[1]:
                         }
                         df_int_add = pd.DataFrame([int_row])
                         st.session_state.df_interv = pd.concat([st.session_state.df_interv, df_int_add], ignore_index=True)
-                        st.session_state.df_interv.to_excel(FICHIER_INTERV_ACTIF, index=False)
+                        st.session_state.df_interv.to_excel("Interventions.xlsx", index=False)
                         st.cache_data.clear()
-                        st.success(f"✔ Intervention enregistrée pour l'équipement **{ni_eq}**.")
+                        st.success(f"✔ Intervention enregistrée pour **{ni_eq}**.")
                         st.rerun()
 
         st.markdown("---")
@@ -594,7 +562,7 @@ with onglets_app[1]:
             if nb_res_in == 0:
                 st.warning("Aucune intervention ne correspond à vos filtres.")
             else:
-                st.write(f"Affichage de **{nb_res_in}** intervention(s) :")
+                st.write(f"Affichage de **{nb_res_in}** intervention(s) trouvée(s) :")
 
                 select_in = st.dataframe(
                     resultats_in,
@@ -705,7 +673,7 @@ with onglets_app[2]:
         )
 
 # =========================================================
-# ONGLET 4 : MATRICE DES PANNES
+# ONGLET 4 : MATRICE DES PANNES (SANS SOURCE NAME)
 # =========================================================
 with onglets_app[3]:
     st.subheader("📚 Matrice des Pannes (Classée par Marques & Modèles)")
